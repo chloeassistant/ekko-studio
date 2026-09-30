@@ -77,10 +77,11 @@ for (const { path, hit, listed, total } of [
     const loading = page.locator('.message-search-loading')
     if (listed) {
       await expect(loading).toBeVisible()
+      await expect(loading.locator('.studio-loading-logo')).toHaveCount(0)
       await expect(page.locator('.virtual-message-list-host')).toHaveCount(0)
       await loading.evaluate(async loader => {
-        const spinner = loader.querySelector('.message-search-spinner')!
-        const animation = spinner.getAnimations()[0]
+        const spinner = loader.querySelector('.n-base-loading__container')!
+        const animation = spinner.getAnimations({ subtree: true })[0]
         await animation.ready
         const startTime = animation.startTime
         const state = { continuous: true, hiddenDuringMount: false }
@@ -91,7 +92,7 @@ for (const { path, hit, listed, total } of [
             return
           }
           state.continuous &&= spinner.isConnected
-            && spinner.getAnimations()[0] === animation
+            && spinner.getAnimations({ subtree: true })[0] === animation
             && animation.startTime === startTime
           const transcript = loader.parentElement?.querySelector('.virtual-message-list-host')
           if (transcript) state.hiddenDuringMount = getComputedStyle(transcript).opacity === '0'
@@ -100,9 +101,9 @@ for (const { path, hit, listed, total } of [
       })
       if (cdp) {
         // Verify Chromium actually accelerates this animation, so a busy
-        // message-rendering main thread cannot pause the rotation.
+        // message-rendering main thread cannot pause the loading indicator.
         const { root } = await cdp.send('DOM.getDocument')
-        const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: '.message-search-spinner' })
+        const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: '.message-search-loading .n-base-loading__container' })
         const { node } = await cdp.send('DOM.describeNode', { nodeId })
         await expect.poll(async () => {
           const layer = layers.find(item => item.backendNodeId === node.backendNodeId)
@@ -122,6 +123,7 @@ for (const { path, hit, listed, total } of [
       })
     }
     const target = page.locator(`#message-${hit}.highlight`)
+    await expect(target).toBeVisible()
     await expect(target).toBeInViewport()
     // Once revealed, no alignment retries or virtual size corrections may shake the hit.
     const positions = await target.evaluate(async element => {

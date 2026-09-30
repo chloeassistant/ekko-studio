@@ -365,6 +365,7 @@ export default {
 
   // 通用
   common: {
+    close: '關閉',
     loading: '載入中...',
     cancel: '取消',
     delete: '刪除',
@@ -1201,6 +1202,9 @@ export default {
     interactionCountdownElapsed: '00:00 · 等待伺服器確認',
     deleteSession: '確定刪除此工作階段？',
     sessionDeleted: '工作階段已刪除',
+    sessionListActions: '會話列表操作',
+    filterByProfile: '依 Profile 篩選',
+    selectedSessions: '已選 {count} 項',
     toggleBatchMode: '批次選取',
     selectAll: '全選',
     confirmBatchDelete: '確定刪除選取的 {count} 個工作階段？',
@@ -1308,6 +1312,7 @@ export default {
   },
 
   workflow: {
+    listActions: '工作流列表操作',
     quality: { results: "JEV 质量观察", rerun: "编辑并从此节点重跑", decision: { pass: "已通过", needs_improvement: "需要改进", unknown: "未知" } },
     title: '工作流',
     profile: '設定檔',
@@ -1821,6 +1826,7 @@ export default {
 
   // 技能
   skills: {
+    filterBySource: "依來源篩選",
     title: '技能',
     targetFilter: '執行環境',
     targets: {
@@ -2367,6 +2373,10 @@ export default {
 
   // 日誌
   logs: {
+    file: "日誌檔案",
+    level: "日誌等級",
+    lines: "行數",
+    filters: "篩選日誌",
     title: '日誌',
     all: '全部',
     searchPlaceholder: '搜尋...',
@@ -3643,6 +3653,14 @@ export default {
 
   // 更新日誌
   changelog: {
+    new_0_7_26_1: '統一 Studio 導覽列、頁面標題與清單操作，並最佳化行動版配置 (#3232)',
+    new_0_7_26_2: '統一頁面載入回饋，改善 Logo 載入動畫及減少動態效果模式下的可見性 (#3232、#3236)',
+    new_0_7_26_3: '最佳化自訂背景與毛玻璃層次，修復視窗邊緣和圓角銜接，並讓麥克風按鈕跟隨佈景主題配色 (#3236)',
+    new_0_7_26_4: '依平台調整桌面視窗控制按鈕的位置與樣式，並保留 Windows 原生視窗圓角 (#3234、#3235)',
+    new_0_7_26_5: 'Gateway 自動啟動改為明確啟用，Profile 清單載入不再等待 CLI 檢查，並修復訊息氣泡首次繪製 (#3233)',
+    new_0_7_26_6: '用量統計新增費用記錄與自訂模型單價，支援依本機模型目錄估算費用，並改善模型上下文限制比對 (#3226)',
+    new_0_7_26_7: '相容 DSH 登錄表預設與原生外掛設定，修復外掛頁面未填滿可用區域的問題 (#3218)',
+    new_0_7_26_8: '修復 Agent 管理員中 Cursor 圖示在淺色卡片上的顯示 (#3222)',
     new_0_7_25_1: '新增 Cursor CLI 支援，可用於聊天、群組聊天與工作流程，並提供原生設定、技能管理及獨立的 Studio MCP 設定 (#3110)',
     new_0_7_25_2: '新增可設定的 JEV 記憶召回、相關性篩選、寫入審核、技能匹配與學習預先檢查 (#3159, #3161, #3169)',
     new_0_7_25_3: '新增可選的 JEV 瀏覽器目標匹配與操作驗證、群組摘要審核與訊息路由，以及工作流程品質檢查 (#3208, #3211)',

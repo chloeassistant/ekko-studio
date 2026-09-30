@@ -377,6 +377,7 @@ export default {
 
   // 공통
   common: {
+    close: '닫기',
     loading: '로딩 중...',
     cancel: '취소',
     retry: '재시도',
@@ -1148,6 +1149,9 @@ export default {
     interactionCountdown: '{time} 남음',
     interactionCountdownElapsed: '00:00 · 서버 확인 대기 중',
     deleteSession: '이 세션을 삭제하시겠습니까?',
+    sessionListActions: '세션 목록 작업',
+    filterByProfile: '프로필로 필터링',
+    selectedSessions: '{count}개 선택됨',
     toggleBatchMode: '일괄 선택',
     selectAll: '모두 선택',
     confirmBatchDelete: '선택한 {count}개의 세션을 삭제하시겠습니까?',
@@ -1379,6 +1383,7 @@ export default {
 
   // 스킬
   skills: {
+    filterBySource: "출처별 필터",
     title: '스킬',
     targetFilter: '런타임',
     targets: {
@@ -1925,6 +1930,10 @@ export default {
 
   // 로그
   logs: {
+    file: "로그 파일",
+    level: "로그 수준",
+    lines: "줄 수",
+    filters: "로그 필터",
     title: '로그',
     all: '전체',
     searchPlaceholder: '검색...',
@@ -2871,6 +2880,7 @@ export default {
   },
 
   workflow: {
+    listActions: '워크플로 목록 작업',
     quality: { results: "JEV quality observations", rerun: "Edit and rerun from this node", decision: { pass: "Passed", needs_improvement: "Needs improvement", unknown: "Unknown" } },
     title: '워크플로',
     profile: '프로필',
@@ -3280,6 +3290,14 @@ export default {
   },
 
   changelog: {
+    new_0_7_26_1: 'Studio 탐색, 페이지 헤더, 목록 작업을 통일하고 모바일 레이아웃을 개선했습니다 (#3232)',
+    new_0_7_26_2: '페이지 로딩 표시를 통일하고 동작 줄이기 모드에서도 로고 로딩 표시가 잘 보이도록 개선했습니다 (#3232, #3236)',
+    new_0_7_26_3: '사용자 지정 배경과 유리 효과의 계층을 개선하고 창 가장자리와 둥근 모서리를 수정했으며 마이크 버튼에 테마 색상을 적용했습니다 (#3236)',
+    new_0_7_26_4: '플랫폼에 맞게 데스크톱 창 제어 버튼의 위치와 스타일을 조정하고 Windows 기본 둥근 모서리를 유지했습니다 (#3234, #3235)',
+    new_0_7_26_5: 'Gateway 자동 시작을 명시적으로 활성화하도록 변경하고 Profile 목록 로딩에서 CLI 검사를 분리했으며 메시지 말풍선의 최초 렌더링을 수정했습니다 (#3233)',
+    new_0_7_26_6: '사용 비용 기록과 사용자 지정 모델 단가를 추가하고 로컬 모델 카탈로그 기반 비용 추정 및 컨텍스트 한도 매칭을 개선했습니다 (#3226)',
+    new_0_7_26_7: 'DSH 레지스트리 프리셋과 네이티브 플러그인 설정을 지원하고 플러그인 페이지가 사용 가능한 공간을 채우지 못하는 문제를 수정했습니다 (#3218)',
+    new_0_7_26_8: 'Agent Manager의 밝은 카드에서 Cursor 로고가 잘 보이지 않던 문제를 수정했습니다 (#3222)',
     new_0_7_25_1: '채팅, 그룹 채팅, 워크플로에서 Cursor CLI를 지원하며 네이티브 설정, 스킬 관리, 분리된 Studio MCP 설정을 추가했습니다 (#3110)',
     new_0_7_25_2: '설정 가능한 JEV 메모리 검색, 관련성 필터링, 쓰기 검토, 스킬 매칭, 학습 사전 검사를 추가했습니다 (#3159, #3161, #3169)',
     new_0_7_25_3: '선택적으로 활성화할 수 있는 JEV 브라우저 대상 매칭과 작업 검증, 그룹 요약 검토와 메시지 라우팅, 워크플로 품질 검사를 추가했습니다 (#3208, #3211)',

@@ -377,6 +377,7 @@ export default {
 
   // Common
   common: {
+    close: 'Fermer',
     loading: 'Chargement...',
     cancel: 'Annuler',
     retry: 'Réessayer',
@@ -1148,6 +1149,9 @@ export default {
     interactionCountdown: '{time} restante',
     interactionCountdownElapsed: '00:00 · Confirmation du serveur en attente',
     deleteSession: 'Supprimer cette session ?',
+    sessionListActions: 'Actions de la liste des sessions',
+    filterByProfile: 'Filtrer par profil',
+    selectedSessions: '{count} sélectionnées',
     toggleBatchMode: 'Sélection par lot',
     selectAll: 'Tout sélectionner',
     confirmBatchDelete: 'Supprimer {count} sessions sélectionnées?',
@@ -1379,6 +1383,7 @@ jobTriggered: 'Job declenche',
 
   // Skills
   skills: {
+    filterBySource: "Filtrer par source",
     title: 'Competences',
     targetFilter: 'Runtime',
     targets: {
@@ -1925,6 +1930,10 @@ jobTriggered: 'Job declenche',
 
   // Logs
   logs: {
+    file: "Fichier journal",
+    level: "Niveau de journalisation",
+    lines: "Lignes",
+    filters: "Filtrer les journaux",
     title: 'Journaux',
     all: 'Tout',
     searchPlaceholder: 'Rechercher...',
@@ -2872,6 +2881,7 @@ jobTriggered: 'Job declenche',
   },
 
   workflow: {
+    listActions: 'Actions de la liste des workflows',
     quality: { results: "JEV quality observations", rerun: "Edit and rerun from this node", decision: { pass: "Passed", needs_improvement: "Needs improvement", unknown: "Unknown" } },
     title: 'Workflow',
     profile: 'Profil',
@@ -3281,6 +3291,14 @@ jobTriggered: 'Job declenche',
   },
 
   changelog: {
+    new_0_7_26_1: 'Navigation, en-têtes de page et actions des listes de Studio unifiés, avec une meilleure mise en page sur mobile (#3232)',
+    new_0_7_26_2: 'Indicateurs de chargement des pages unifiés et logo de chargement plus visible, y compris en mode de réduction des animations (#3232, #3236)',
+    new_0_7_26_3: 'Arrière-plans personnalisés et couches translucides améliorés, bords et coins arrondis corrigés, et boutons de microphone adaptés aux couleurs du thème (#3236)',
+    new_0_7_26_4: 'Position et style des commandes de fenêtre adaptés à chaque plateforme, en conservant les coins arrondis natifs de Windows (#3234, #3235)',
+    new_0_7_26_5: 'Démarrage automatique du Gateway désormais sur activation explicite, chargement des profils sans attendre les vérifications CLI et affichage initial des bulles de message corrigé (#3233)',
+    new_0_7_26_6: 'Ajout du suivi des coûts et de tarifs personnalisés par modèle, avec des estimations issues du catalogue local et une meilleure correspondance des limites de contexte (#3226)',
+    new_0_7_26_7: 'Compatibilité avec les préréglages du registre DSH et la configuration native des plugins, et correction des pages de plugins ne remplissant pas tout l’espace disponible (#3218)',
+    new_0_7_26_8: 'Visibilité du logo Cursor corrigée sur les cartes claires du gestionnaire d’agents (#3222)',
     new_0_7_25_1: 'Prise en charge de Cursor CLI dans les discussions, groupes et workflows, avec paramètres natifs, gestion des compétences et configuration Studio MCP isolée (#3110)',
     new_0_7_25_2: 'Ajout du rappel de mémoire JEV, du filtrage de pertinence, de la revue des écritures, de la sélection des compétences et des vérifications préalables à l’apprentissage, tous configurables (#3159, #3161, #3169)',
     new_0_7_25_3: 'Ajout de contrôles JEV facultatifs pour les cibles et actions du navigateur, la revue des résumés de groupe, le routage des messages et la qualité des workflows (#3208, #3211)',
