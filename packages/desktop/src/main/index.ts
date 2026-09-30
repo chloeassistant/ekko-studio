@@ -233,6 +233,12 @@ function remoteWindowArguments(): string[] {
   return remoteConfig.active ? [REMOTE_MODE_ARGUMENT] : []
 }
 
+// Remote mode only hands http(s) URLs from window.open to the OS; local mode is unchanged.
+function openExternalFromWindow(url: string): void {
+  const target = remoteConfig.active ? normalizeExternalHttpUrl(url) : url
+  if (target) shell.openExternal(target).catch(() => undefined)
+}
+
 function ensurePetWindow(): BrowserWindow {
   if (petWindow && !petWindow.isDestroyed()) return petWindow
 
@@ -276,7 +282,7 @@ function ensurePetWindow(): BrowserWindow {
     if (isTrustedDesktopAppUrl(url, serverUrl)) {
       return { action: 'allow' }
     }
-    shell.openExternal(url).catch(() => undefined)
+    openExternalFromWindow(url)
     return { action: 'deny' }
   })
   return petWindow
@@ -630,7 +636,7 @@ async function createWindow(): Promise<void> {
     if (isTrustedDesktopAppUrl(url, serverUrl)) {
       return { action: 'allow' }
     }
-    shell.openExternal(url).catch(() => undefined)
+    openExternalFromWindow(url)
     return { action: 'deny' }
   })
 
@@ -721,7 +727,7 @@ async function openChatWindow(sessionIdInput: unknown, profileInput?: unknown): 
     const agentLinkPopup = groupChatAgentLinkPopupResponse(targetUrl, frameName)
     if (agentLinkPopup) return agentLinkPopup
     if (/^(https?:|mailto:)/i.test(targetUrl)) {
-      shell.openExternal(targetUrl).catch(() => undefined)
+      openExternalFromWindow(targetUrl)
     }
     return { action: 'deny' }
   })
