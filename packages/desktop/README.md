@@ -77,12 +77,14 @@ directory (Electron `userData`, for example `~/.config/hermes-studio` on Linux):
   from the previous server are closed. Each server keeps its own browser login.
 
 In remote mode the app does not prepare the local runtime, start the local server,
-install command shims, or run the auto-updater. The tray hides **Check for Updates**
-and **Reset Login**. You sign in with the remote server's own login. The desktop
-never sends its local token to a remote page. The embedded browser, the desktop pet
-window and the desktop MCP bridge stay on this computer, and agents on the remote
-server cannot reach them. The remote page gets the same desktop bridge as the local
-UI (notifications, microphone, embedded browser control), so only list servers you trust.
+install command shims, start the embedded browser, or run the auto-updater. The tray
+hides **Check for Updates** and **Reset Login**. You sign in with the remote server's
+own login. The desktop never sends its local token to a remote page. The remote page
+cannot use the embedded browser, the updater, app restart, the runtime directory picker
+or the open-external-URL call; links open in the system browser instead. The desktop
+pet window and the desktop MCP bridge stay on this computer, and agents on the remote
+server cannot reach them. The remote page still gets notifications, microphone access
+and chat windows, so only list servers you trust.
 
 ## Desktop and tray icons
 

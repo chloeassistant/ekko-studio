@@ -68,6 +68,7 @@ const WINDOW_STATE_CHANGE_CHANNEL = 'hermes-desktop:window-state-change'
 const BROWSER_STATE_CHANGE_CHANNEL = 'hermes-desktop:browser-state-change'
 const BROWSER_ANNOTATION_REQUEST_CHANNEL = 'hermes-desktop:browser-annotation-request'
 const DESKTOP_DISABLED_CHROMIUM_FEATURES = ['CompressionDictionaryTransport', 'CompressionDictionaryTransportBackend']
+const REMOTE_MODE_ARGUMENT = '--hermes-remote-server'
 const FAILURE_RECOVERY_WINDOW_MS = 60_000
 type WindowControlAction = 'minimize' | 'toggle-maximize' | 'close'
 type DesktopWindowBounds = { x: number; y: number; width: number; height: number }
@@ -228,6 +229,10 @@ function chatRouteUrl(sessionId: string, profile?: string): string | null {
   return webUiHashUrl(`/desktop-chat/${encodeURIComponent(sessionId)}${query}`)
 }
 
+function remoteWindowArguments(): string[] {
+  return remoteConfig.active ? [REMOTE_MODE_ARGUMENT] : []
+}
+
 function ensurePetWindow(): BrowserWindow {
   if (petWindow && !petWindow.isDestroyed()) return petWindow
 
@@ -254,7 +259,7 @@ function ensurePetWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      additionalArguments: ['--hermes-window-kind=pet'],
+      additionalArguments: ['--hermes-window-kind=pet', ...remoteWindowArguments()],
     },
   })
   petWindow.setBackgroundColor('#00000000')
@@ -480,16 +485,24 @@ function updateTrayMenu() {
   tray.setContextMenu(menu)
 }
 
+let remoteOpenAttempt = 0
+
+// serverUrl (the trusted origin) is set only once the main page has loaded. A newer
+// attempt (Retry, server switch) aborts this navigation and supersedes it.
 async function openRemoteServer(server: RemoteServer): Promise<void> {
-  serverUrl = server.url
-  updateTrayMenu()
+  const attempt = ++remoteOpenAttempt
+  serverUrl = null
   try {
-    if (mainWindow) await mainWindow.loadURL(mainRouteUrl() || server.url)
-    await loadPetWindowRoute()
+    if (mainWindow) await mainWindow.loadURL(`${server.url}/#/hermes/chat`)
   } catch (err) {
+    if (attempt !== remoteOpenAttempt) return
     console.error(`[remote-server] failed to open ${server.url}:`, err)
-    await loadServiceFailurePage(new Error(`Cannot reach remote server ${server.url}: ${err instanceof Error ? err.message : String(err)}`))
+    await loadServiceFailurePage(new Error(`${server.url}: ${err instanceof Error ? err.message : String(err)}`), t('remoteServer.unreachable'))
+    return
   }
+  if (attempt !== remoteOpenAttempt) return
+  serverUrl = server.url
+  await loadPetWindowRoute()
 }
 
 async function switchRemoteServer(server: RemoteServer): Promise<void> {
@@ -567,6 +580,7 @@ async function createWindow(): Promise<void> {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      additionalArguments: remoteWindowArguments(),
     },
   })
 
@@ -622,8 +636,12 @@ async function createWindow(): Promise<void> {
 
   // If the Web UI server is already up (re-opening window after close on
   // macOS), go straight to it. Otherwise show a loading splash; bootstrap()
-  // will swap in the real URL once the server is ready.
-  if (serverUrl) {
+  // will swap in the real URL once the server is ready. Remote mode always
+  // goes through openRemoteServer(), which shows the failure page on error.
+  if (remoteConfig.active) {
+    await mainWindow.loadURL(splashHtml(t('remoteServer.connecting')))
+    void openRemoteServer(remoteConfig.active)
+  } else if (serverUrl) {
     await mainWindow.loadURL(mainRouteUrl() || serverUrl)
   } else {
     await mainWindow.loadURL(splashHtml(t('runtime.checking')))
@@ -681,7 +699,7 @@ async function openChatWindow(sessionIdInput: unknown, profileInput?: unknown): 
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      additionalArguments: ['--hermes-window-kind=chat'],
+      additionalArguments: ['--hermes-window-kind=chat', ...remoteWindowArguments()],
     },
   })
   chatWindows.set(windowKey, chatWindow)
@@ -1046,13 +1064,13 @@ async function bootstrap(source?: RuntimeDownloadSource) {
   }
 }
 
-async function loadServiceFailurePage(error: unknown): Promise<void> {
+async function loadServiceFailurePage(error: unknown, title = t('desktop.failedStartServices')): Promise<void> {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const msg = escapeHtml(String(error instanceof Error ? error.message : error))
   const pageBackground = process.platform === 'win32' ? 'transparent' : '#1a1a1a'
   const html = `<html><body style="margin:0;font-family:system-ui;background:${pageBackground};color:#eee">
     <main style="min-height:100vh;padding:32px;background:#1a1a1a;box-sizing:border-box">
-      <h2>${escapeHtml(t('desktop.failedStartServices'))}</h2>
+      <h2>${escapeHtml(title)}</h2>
       <pre style="white-space:pre-wrap;color:#f88">${msg}</pre>
       <button id="retry" style="padding:8px 14px;cursor:pointer">Retry</button>
       <script>
@@ -1093,6 +1111,7 @@ async function recoverUnexpectedWebUiExit(details: { code: number | null; signal
 
 ipcMain.handle('hermes-desktop:get-token', () => (remoteConfig.active ? '' : getToken()))
 ipcMain.handle('hermes-desktop:restart-app', event => {
+  if (remoteConfig.active) throw new Error('Desktop restart is disabled in remote server mode')
   if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
     throw new Error('Desktop restart can only be requested from the main window')
   }
@@ -1111,6 +1130,7 @@ function isTrustedDesktopWindowSender(sender: WebContents): boolean {
 }
 
 function requireDesktopUpdaterSender(event: IpcMainInvokeEvent): void {
+  if (remoteConfig.active) throw new Error('Desktop updates are disabled in remote server mode')
   if (!isTrustedDesktopWindowSender(event.sender)
     || event.senderFrame !== event.sender.mainFrame
     || !isTrustedDesktopAppUrl(event.senderFrame?.url || '', serverUrl)) {
@@ -1147,6 +1167,7 @@ function broadcastDesktopUpdateState(state: DesktopUpdateState): void {
 }
 
 ipcMain.handle('hermes-desktop:open-external-url', async (event, url?: unknown) => {
+  if (remoteConfig.active) throw new Error('Opening external URLs is disabled in remote server mode')
   if (!isTrustedDesktopWindowSender(event.sender)) {
     throw new Error('External URLs can only be opened from a Hermes desktop window')
   }
@@ -1162,6 +1183,7 @@ ipcMain.handle('hermes-desktop:open-external-url', async (event, url?: unknown) 
 })
 
 function browserForEvent(event: IpcMainInvokeEvent): BrowserManager {
+  if (remoteConfig.active) throw new Error('Desktop browser is disabled in remote server mode')
   if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) throw new Error('Desktop browser IPC is only available to the main window')
   if (!browserManager) throw new Error('Desktop browser is still starting')
   return browserManager
@@ -1263,7 +1285,11 @@ ipcMain.handle('hermes-desktop:browser-update-annotation-note', (event, tabId?: 
 ipcMain.handle('hermes-desktop:browser-capture-annotations', (event, tabId?: unknown) => browserForEvent(event).captureAnnotations(String(tabId || '')))
 ipcMain.handle('hermes-desktop:browser-clear-annotations', (event, tabId?: unknown) => browserForEvent(event).clearAnnotations(String(tabId || '')))
 ipcMain.handle('hermes-desktop:browser-remove-annotation', (event, tabId?: unknown, marker?: unknown) => browserForEvent(event).removeAnnotation(String(tabId || ''), Number(marker)))
-ipcMain.handle('hermes-desktop:select-runtime-directory', async (_event, defaultPath?: unknown) => {
+ipcMain.handle('hermes-desktop:select-runtime-directory', async (event, defaultPath?: unknown) => {
+  if (!isTrustedDesktopWindowSender(event.sender)) {
+    throw new Error('Runtime directories can only be selected from a Hermes desktop window')
+  }
+  if (remoteConfig.active) return null
   const options: OpenDialogOptions = {
     properties: ['openDirectory'],
     defaultPath: typeof defaultPath === 'string' && defaultPath.trim()
@@ -1323,7 +1349,10 @@ function safeNotificationClickUrl(value: unknown): string | null {
   return value.startsWith('/hermes/') && !value.includes('..') && !value.includes('\\') ? value : null
 }
 
-ipcMain.handle('hermes-desktop:notify-completion', (_event, payload?: { title?: unknown; body?: unknown; icon?: unknown; tag?: unknown; clickUrl?: unknown }) => {
+ipcMain.handle('hermes-desktop:notify-completion', (event, payload?: { title?: unknown; body?: unknown; icon?: unknown; tag?: unknown; clickUrl?: unknown }) => {
+  if (!isTrustedDesktopWindowSender(event.sender)) {
+    throw new Error('Notifications can only be shown from a Hermes desktop window')
+  }
   const supported = Notification.isSupported()
   if (!supported) {
     console.warn('[desktop-notification] Electron notifications are not supported on this system')
@@ -1420,9 +1449,6 @@ function runDesktopApp() {
     remoteConfig = loadRemoteServerConfig(app.getPath('userData'))
     createTray()
     await createWindow()
-    await initializeDesktopBrowser().catch(error => {
-      console.error('[desktop-browser] failed to initialize:', error)
-    })
     if (remoteConfig.error) {
       console.warn(`[remote-server] ${remoteConfig.error}; using the local server`)
       void dialog.showMessageBox({
@@ -1434,9 +1460,12 @@ function runDesktopApp() {
         detail: remoteConfig.error,
       })
     }
-    if (remoteConfig.active) {
-      void openRemoteServer(remoteConfig.active)
-    } else {
+    // Remote mode: createWindow() already started loading the remote server. The
+    // embedded browser, local server and updater stay off.
+    if (!remoteConfig.active) {
+      await initializeDesktopBrowser().catch(error => {
+        console.error('[desktop-browser] failed to initialize:', error)
+      })
       void bootstrap()
       initAutoUpdater({
         beforeQuitAndInstall: prepareAppShutdown,

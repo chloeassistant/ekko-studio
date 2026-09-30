@@ -10,24 +10,30 @@ function desktopWindowKind(): DesktopWindowKind {
   return kind === 'pet' || kind === 'chat' ? kind : 'main'
 }
 
+// Remote server mode: the main process refuses these APIs, so they are left out
+// and the client falls back (links open in the system browser).
+const isRemoteServer = process.argv.includes('--hermes-remote-server')
+
 contextBridge.exposeInMainWorld('hermesDesktop', {
-  updater: {
-    getState: (): Promise<DesktopUpdateState> => ipcRenderer.invoke('hermes-desktop:update-get-state'),
-    cancel: (): Promise<DesktopUpdateState> => ipcRenderer.invoke('hermes-desktop:update-cancel'),
-    download: (): Promise<DesktopUpdateState> => ipcRenderer.invoke('hermes-desktop:update-download'),
-    install: (): Promise<DesktopUpdateState> => ipcRenderer.invoke('hermes-desktop:update-install'),
-    onStateChange: (callback: (state: DesktopUpdateState) => void): (() => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, state: DesktopUpdateState) => callback(state)
-      ipcRenderer.on('hermes-desktop:update-state-change', listener)
-      return () => ipcRenderer.removeListener('hermes-desktop:update-state-change', listener)
+  ...(isRemoteServer ? {} : {
+    updater: {
+      getState: (): Promise<DesktopUpdateState> => ipcRenderer.invoke('hermes-desktop:update-get-state'),
+      cancel: (): Promise<DesktopUpdateState> => ipcRenderer.invoke('hermes-desktop:update-cancel'),
+      download: (): Promise<DesktopUpdateState> => ipcRenderer.invoke('hermes-desktop:update-download'),
+      install: (): Promise<DesktopUpdateState> => ipcRenderer.invoke('hermes-desktop:update-install'),
+      onStateChange: (callback: (state: DesktopUpdateState) => void): (() => void) => {
+        const listener = (_event: Electron.IpcRendererEvent, state: DesktopUpdateState) => callback(state)
+        ipcRenderer.on('hermes-desktop:update-state-change', listener)
+        return () => ipcRenderer.removeListener('hermes-desktop:update-state-change', listener)
+      },
     },
-  },
+    restartApp: (): Promise<boolean> => ipcRenderer.invoke('hermes-desktop:restart-app'),
+    selectRuntimeDirectory: (defaultPath?: string): Promise<string | null> => ipcRenderer.invoke('hermes-desktop:select-runtime-directory', defaultPath),
+    openExternalUrl: (url: string): Promise<boolean> => ipcRenderer.invoke('hermes-desktop:open-external-url', url),
+  }),
   getToken: (): Promise<string> => ipcRenderer.invoke('hermes-desktop:get-token'),
   retryBootstrap: (source?: 'cf' | 'github'): Promise<void> => ipcRenderer.invoke('hermes-desktop:retry-bootstrap', source),
-  restartApp: (): Promise<boolean> => ipcRenderer.invoke('hermes-desktop:restart-app'),
-  selectRuntimeDirectory: (defaultPath?: string): Promise<string | null> => ipcRenderer.invoke('hermes-desktop:select-runtime-directory', defaultPath),
   notifyCompletion: (payload: { title: string; body?: string; icon?: string; tag?: string; clickUrl?: string }): Promise<boolean> => ipcRenderer.invoke('hermes-desktop:notify-completion', payload),
-  openExternalUrl: (url: string): Promise<boolean> => ipcRenderer.invoke('hermes-desktop:open-external-url', url),
   openChatWindow: (sessionId: string, profile?: string): Promise<void> => ipcRenderer.invoke('hermes-desktop:open-chat-window', sessionId, profile),
   ensureAuth: async (): Promise<boolean> => {
     const token = await ipcRenderer.invoke('hermes-desktop:get-token')
@@ -51,7 +57,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     ipcRenderer.on('hermes-desktop:pet-window-refresh', listener)
     return () => ipcRenderer.removeListener('hermes-desktop:pet-window-refresh', listener)
   },
-  ...(desktopWindowKind() === 'main' ? { browser: {
+  ...(desktopWindowKind() === 'main' && !isRemoteServer ? { browser: {
     getState: (): Promise<DesktopBrowserState> => ipcRenderer.invoke('hermes-desktop:browser-get-state'),
     setViewport: (bounds: BrowserBounds, visible: boolean): Promise<DesktopBrowserState> => ipcRenderer.invoke('hermes-desktop:browser-set-viewport', bounds, visible),
     createTab: (url?: string, activate?: boolean): Promise<DesktopBrowserTab> => ipcRenderer.invoke('hermes-desktop:browser-create-tab', url, activate),
