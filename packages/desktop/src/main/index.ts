@@ -289,20 +289,21 @@ function ensurePetWindow(): BrowserWindow {
 }
 
 async function loadPetWindowRoute(): Promise<void> {
+  // An in-flight load may target a previous server; wait for it, then re-check.
+  while (petWindowLoadPromise) await petWindowLoadPromise
   const url = petRouteUrl()
   if (!url) return
   const target = ensurePetWindow()
   if (target.webContents.getURL() === url) return
-  if (!petWindowLoadPromise) {
-    petWindowLoadPromise = target.loadURL(url)
-      .catch(err => {
-        console.warn('[desktop-pet] failed to load pet window:', err)
-      })
-      .finally(() => {
-        petWindowLoadPromise = null
-      })
-  }
-  await petWindowLoadPromise
+  const load: Promise<void> = target.loadURL(url)
+    .catch(err => {
+      console.warn('[desktop-pet] failed to load pet window:', err)
+    })
+    .finally(() => {
+      if (petWindowLoadPromise === load) petWindowLoadPromise = null
+    })
+  petWindowLoadPromise = load
+  await load
 }
 
 function windowState(target: BrowserWindow | null = mainWindow) {
@@ -498,6 +499,9 @@ let remoteOpenAttempt = 0
 async function openRemoteServer(server: RemoteServer): Promise<void> {
   const attempt = ++remoteOpenAttempt
   serverUrl = null
+  // Never leave the pet window on the previous server's page.
+  if (petWindow && !petWindow.isDestroyed()) await petWindow.loadURL('about:blank').catch(() => undefined)
+  if (attempt !== remoteOpenAttempt) return
   try {
     if (mainWindow) await mainWindow.loadURL(`${server.url}/#/hermes/chat`)
   } catch (err) {
