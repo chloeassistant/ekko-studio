@@ -86,6 +86,28 @@ pet window and the desktop MCP bridge stay on this computer, and agents on the r
 server cannot reach them. The remote page still gets notifications, microphone access
 and chat windows, so only list servers you trust.
 
+### Request headers per server
+
+A server entry may carry static request headers, for example a Cloudflare Access
+service token so the app skips the Access login page:
+
+```json
+{ "active": "chloe", "servers": [ { "name": "chloe", "url": "https://ekko-chloe.hyades.io",
+  "headers": { "CF-Access-Client-Id": "<id>", "CF-Access-Client-Secret": "<secret>" } } ] }
+```
+
+- The main process adds the headers only to requests whose origin (scheme, host and
+  port) is exactly that server's origin: page loads, fetch/XHR and the WebSocket
+  upgrade. Requests to any other origin, including redirects elsewhere, get none.
+  The headers are never passed to the page, the preload script or IPC, and are never logged.
+- `headers` is an object of at most 16 string values. Names must be RFC 7230 tokens;
+  values must not contain CR, LF or NUL. `Host`, `Cookie`, `Origin`, `Content-Length`,
+  `Transfer-Encoding`, `Connection` and `Upgrade` are refused. An invalid `headers`
+  object skips the whole entry.
+- The file then holds secrets. Restrict it to your user (`chmod 600 remote-servers.json`).
+  A tray server switch rewrites the file with mode 600.
+- `EKKO_REMOTE_SERVER_URL` cannot carry headers.
+
 ## Desktop and tray icons
 
 Regenerate the rounded Windows desktop icon and macOS, Windows, and Linux tray

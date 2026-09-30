@@ -4,7 +4,15 @@ import { join } from 'node:path'
 export const REMOTE_SERVERS_FILE = 'remote-servers.json'
 export const REMOTE_SERVER_URL_ENV = 'EKKO_REMOTE_SERVER_URL'
 
-export type RemoteServer = { name: string; url: string }
+// `headers` are secrets (e.g. a Cloudflare Access service token): main process only, never logged.
+export type RemoteServer = { name: string; url: string; headers?: Record<string, string> }
+
+const MAX_HEADERS = 16
+// RFC 7230 token.
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
+const RESERVED_HEADERS: Record<string, true> = {
+  host: true, cookie: true, origin: true, 'content-length': true, 'transfer-encoding': true, connection: true, upgrade: true,
+}
 
 // `active` null means local mode. `error` explains why a configured remote server
 // was refused; the app then stays in local mode. The file is the only allowlist.
@@ -30,6 +38,45 @@ function localMode(error: string | null = null): RemoteServerConfig {
   return { active: null, servers: [], error }
 }
 
+// undefined: no headers; null: invalid.
+function parseHeaders(value: unknown): Record<string, string> | undefined | null {
+  if (value === undefined) return undefined
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const entries = Object.entries(value)
+  if (entries.length > MAX_HEADERS) return null
+  const seen = new Set<string>()
+  for (const [name, headerValue] of entries) {
+    const lower = name.toLowerCase()
+    if (!HEADER_NAME.test(name) || Object.hasOwn(RESERVED_HEADERS, lower) || seen.has(lower)) return null
+    if (typeof headerValue !== 'string' || /[\r\n\0]/.test(headerValue)) return null
+    seen.add(lower)
+  }
+  return entries.length ? Object.fromEntries(entries) as Record<string, string> : undefined
+}
+
+// Request headers with the matching server's static headers applied, or undefined when
+// the URL's origin (ws:/wss: counted as http:/https:) is not exactly a configured server.
+export function remoteServerRequestHeaders(
+  servers: RemoteServer[],
+  url: string,
+  requestHeaders: Record<string, string>,
+): Record<string, string> | undefined {
+  let origin: string
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol === 'ws:') parsed.protocol = 'http:'
+    else if (parsed.protocol === 'wss:') parsed.protocol = 'https:'
+    origin = parsed.origin
+  } catch {
+    return undefined
+  }
+  const headers = servers.find(server => server.url === origin)?.headers
+  if (!headers) return undefined
+  const replaced = new Set(Object.keys(headers).map(name => name.toLowerCase()))
+  const kept = Object.entries(requestHeaders).filter(([name]) => !replaced.has(name.toLowerCase()))
+  return { ...Object.fromEntries(kept), ...headers }
+}
+
 export function loadRemoteServerConfig(
   userDataDir: string,
   envUrl = process.env[REMOTE_SERVER_URL_ENV],
@@ -50,17 +97,18 @@ export function loadRemoteServerConfig(
   }
 
   const { active, servers } = (parsed ?? {}) as { active?: unknown; servers?: unknown }
-  const entries = (Array.isArray(servers) ? servers : []) as Array<{ name?: unknown; url?: unknown } | null>
+  const entries = (Array.isArray(servers) ? servers : []) as Array<{ name?: unknown; url?: unknown; headers?: unknown } | null>
   const valid: RemoteServer[] = []
   entries.forEach((entry, index) => {
     const name = typeof entry?.name === 'string' ? entry.name.trim() : ''
     const url = remoteServerOrigin(entry?.url)
-    // Never log the URL: rejected entries may contain credentials.
-    if (!name || !url || valid.some(server => server.name === name)) {
+    const headers = parseHeaders(entry?.headers)
+    // Never log the URL or headers: rejected entries may contain credentials.
+    if (!name || !url || headers === null || valid.some(server => server.name === name)) {
       console.warn(`[remote-server] ignoring invalid entry #${index} in ${REMOTE_SERVERS_FILE}`)
       return
     }
-    valid.push({ name, url })
+    valid.push(headers ? { name, url, headers } : { name, url })
   })
 
   const selected = valid.find(server => server.name === active)
@@ -73,6 +121,7 @@ export function writeActiveRemoteServer(userDataDir: string, name: string): void
   const data = JSON.parse(readFileSync(file, 'utf8'))
   data.active = name
   const temp = `${file}.tmp`
-  writeFileSync(temp, `${JSON.stringify(data, null, 2)}\n`)
+  // The file may hold secrets (headers); keep it private to the user.
+  writeFileSync(temp, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 })
   renameSync(temp, file)
 }

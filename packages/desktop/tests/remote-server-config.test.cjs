@@ -1,9 +1,9 @@
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
-const { mkdtemp, readFile, rm, writeFile } = require('node:fs/promises')
+const { mkdtemp, readFile, rm, stat, writeFile } = require('node:fs/promises')
 const { tmpdir } = require('node:os')
 const { join } = require('node:path')
-const { loadRemoteServerConfig, writeActiveRemoteServer } = require('../dist/main/remote-server-config.js')
+const { loadRemoteServerConfig, remoteServerRequestHeaders, writeActiveRemoteServer } = require('../dist/main/remote-server-config.js')
 
 async function userDataWith(t, content) {
   const dir = await mkdtemp(join(tmpdir(), 'ekko-remote-servers-'))
@@ -94,4 +94,57 @@ test('switching writes only the active name and the next load selects it', async
   writeActiveRemoteServer(dir, 'backup')
   assert.deepEqual(JSON.parse(await readFile(join(dir, 'remote-servers.json'), 'utf8')), { ...original, active: 'backup' })
   assert.deepEqual(loadRemoteServerConfig(dir, '').active, { name: 'backup', url: 'https://ekko.example.com' })
+  if (process.platform !== 'win32') assert.equal((await stat(join(dir, 'remote-servers.json'))).mode & 0o777, 0o600)
+})
+
+test('server headers are validated per entry and never logged', async t => {
+  const warn = t.mock.method(console, 'warn', () => {})
+  const token = { 'CF-Access-Client-Id': 'client-id.access', 'CF-Access-Client-Secret': 'top-secret' }
+  const many = count => Object.fromEntries(Array.from({ length: count }, (_, i) => [`X-H${i}`, 'top-secret']))
+  const url = 'https://ekko.example.com'
+  const dir = await userDataWith(t, {
+    active: 'ok',
+    servers: [
+      { name: 'ok', url, headers: token },
+      { name: 'plain', url },
+      { name: 'sixteen', url, headers: many(16) },
+      { name: 'seventeen', url, headers: many(17) },
+      { name: 'crlf', url, headers: { 'X-A': 'top-secret\r\nX-Injected: 1' } },
+      { name: 'nul', url, headers: { 'X-A': 'top-secret\u0000' } },
+      { name: 'host', url, headers: { HoSt: 'top-secret' } },
+      { name: 'cookie', url, headers: { cookie: 'top-secret' } },
+      { name: 'upgrade', url, headers: { Upgrade: 'top-secret' } },
+      { name: 'number', url, headers: { 'X-A': 1 } },
+      { name: 'bad-name', url, headers: { 'X A': 'top-secret' } },
+      { name: 'same-name', url, headers: { 'X-A': 'top-secret', 'x-a': 'top-secret' } },
+      { name: 'array', url, headers: ['top-secret'] },
+      { name: 'null', url, headers: null },
+    ],
+  })
+  const config = loadRemoteServerConfig(dir, '')
+  assert.deepEqual(config.servers.map(server => server.name), ['ok', 'plain', 'sixteen'])
+  assert.deepEqual(config.active, { name: 'ok', url, headers: token })
+  assert.deepEqual(config.servers[1], { name: 'plain', url })
+  assert.equal(warn.mock.callCount(), 11)
+  assert.ok(warn.mock.calls.every(call => !/top-secret|CF-Access|X-H/.test(String(call.arguments[0]))))
+})
+
+test('headers are applied only to the exact origin of a listed server', () => {
+  const servers = [
+    { name: 'a', url: 'https://ekko.example.com', headers: { 'CF-Access-Client-Id': 'id' } },
+    { name: 'b', url: 'http://10.0.0.1:8648' },
+  ]
+  const requestHeaders = { Accept: '*/*', 'cf-access-client-id': 'from-page' }
+  const expected = { Accept: '*/*', 'CF-Access-Client-Id': 'id' }
+  assert.deepEqual(remoteServerRequestHeaders(servers, 'https://ekko.example.com/api/x?y=1', requestHeaders), expected)
+  assert.deepEqual(remoteServerRequestHeaders(servers, 'wss://ekko.example.com/socket.io/?EIO=4', requestHeaders), expected)
+  for (const url of [
+    'https://ekko.example.com:8443/',
+    'http://ekko.example.com/',
+    'ws://ekko.example.com/socket.io/',
+    'https://evil.example.com/',
+    'https://ekko.example.com.evil.example/',
+    'http://10.0.0.1:8648/',
+    'not a url',
+  ]) assert.equal(remoteServerRequestHeaders(servers, url, requestHeaders), undefined, url)
 })

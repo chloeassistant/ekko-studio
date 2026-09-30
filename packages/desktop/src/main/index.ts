@@ -35,7 +35,7 @@ import { parseHermesCliArgs, runBundledHermesCli } from './hermes-cli'
 import { installSelectionContextMenu } from './selection-context-menu'
 import { groupChatAgentLinkPopupResponse } from './group-chat-agent-popup'
 import { isTrustedDesktopAppUrl, normalizeExternalHttpUrl } from './window-open-policy'
-import { loadRemoteServerConfig, writeActiveRemoteServer, type RemoteServer, type RemoteServerConfig } from './remote-server-config'
+import { loadRemoteServerConfig, remoteServerRequestHeaders, writeActiveRemoteServer, type RemoteServer, type RemoteServerConfig } from './remote-server-config'
 import {
   ensureDesktopRuntime,
   isDesktopRuntimeReady,
@@ -1457,6 +1457,15 @@ function runDesktopApp() {
     }
     installMicrophonePermissionHandler()
     remoteConfig = loadRemoteServerConfig(app.getPath('userData'))
+    if (remoteConfig.active && remoteConfig.servers.some(server => server.headers)) {
+      // Main, pet and chat windows use the default session. Only requests to a listed
+      // server's exact origin (page, fetch/XHR, WebSocket upgrade) get its headers; the
+      // list is read per request, so tray switches stay in sync.
+      session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
+        const requestHeaders = remoteServerRequestHeaders(remoteConfig.servers, details.url, details.requestHeaders)
+        callback(requestHeaders ? { requestHeaders } : {})
+      })
+    }
     createTray()
     await createWindow()
     if (remoteConfig.error) {
