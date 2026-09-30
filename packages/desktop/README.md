@@ -56,6 +56,58 @@ Hermes Agent data is stored in `~/.hermes` on Windows, macOS, and Linux.
 The desktop wrapper's own Web UI state is stored separately in
 `~/.hermes-web-ui` unless `HERMES_WEB_UI_HOME` is set.
 
+## Remote server mode
+
+The desktop app can open a remote Ekko Studio server instead of starting its
+bundled local server. Create `remote-servers.json` in the app's user data
+directory (Electron `userData`, for example `~/.config/hermes-studio` on Linux):
+
+```json
+{ "active": "chloe", "servers": [ { "name": "chloe", "url": "http://10.23.23.140:8648" } ] }
+```
+
+- The file is the allowlist. There is no UI for typing a URL.
+- Only `http:` and `https:` URLs without a username or password are accepted.
+  Each URL is reduced to its origin. Invalid entries are skipped with a console warning.
+- If the file cannot be read or `active` does not name a valid entry, the app shows
+  an error dialog and starts in local mode. Delete the file to return to local mode.
+- `EKKO_REMOTE_SERVER_URL=<url>` overrides the file with a single server (for testing).
+- With more than one server, the tray menu has a **Servers** submenu. Choosing a
+  server saves it as `active` and reloads the windows on that server. Chat windows
+  from the previous server are closed. Each server keeps its own browser login.
+
+In remote mode the app does not prepare the local runtime, start the local server,
+install command shims, start the embedded browser, or run the auto-updater. The tray
+hides **Check for Updates** and **Reset Login**. You sign in with the remote server's
+own login. The desktop never sends its local token to a remote page. The remote page
+cannot use the embedded browser, the updater, app restart, the runtime directory picker
+or the open-external-URL call; links open in the system browser instead. The desktop
+pet window and the desktop MCP bridge stay on this computer, and agents on the remote
+server cannot reach them. The remote page still gets notifications, microphone access
+and chat windows, so only list servers you trust.
+
+### Request headers per server
+
+A server entry may carry static request headers, for example a Cloudflare Access
+service token so the app skips the Access login page:
+
+```json
+{ "active": "chloe", "servers": [ { "name": "chloe", "url": "https://ekko-chloe.hyades.io",
+  "headers": { "CF-Access-Client-Id": "<id>", "CF-Access-Client-Secret": "<secret>" } } ] }
+```
+
+- The main process adds the headers only to requests whose origin (scheme, host and
+  port) is exactly that server's origin: page loads, fetch/XHR and the WebSocket
+  upgrade. Requests to any other origin, including redirects elsewhere, get none.
+  The headers are never passed to the page, the preload script or IPC, and are never logged.
+- `headers` is an object of at most 16 string values. Names must be RFC 7230 tokens;
+  values must not contain CR, LF or NUL. `Host`, `Cookie`, `Origin`, `Content-Length`,
+  `Transfer-Encoding`, `Connection` and `Upgrade` are refused. An invalid `headers`
+  object skips the whole entry.
+- The file then holds secrets. Restrict it to your user (`chmod 600 remote-servers.json`).
+  A tray server switch rewrites the file with mode 600.
+- `EKKO_REMOTE_SERVER_URL` cannot carry headers.
+
 ## Desktop and tray icons
 
 Regenerate the rounded Windows desktop icon and macOS, Windows, and Linux tray

@@ -60,6 +60,11 @@ type TranslationKey =
   | 'loginReset.successMessage'
   | 'loginReset.failedTitle'
   | 'loginReset.failedMessage'
+  | 'tray.servers'
+  | 'remoteServer.configInvalid'
+  | 'remoteServer.switchFailed'
+  | 'remoteServer.unreachable'
+  | 'remoteServer.connecting'
 
 const supportedLocales: DesktopLocale[] = ['en', 'zh', 'zh-TW', 'ja', 'ko', 'fr', 'es', 'de', 'pt']
 
@@ -122,6 +127,11 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'loginReset.successMessage': 'Login has been reset to {username} / {password}.',
     'loginReset.failedTitle': 'Login reset failed',
     'loginReset.failedMessage': 'Could not reset the desktop login.',
+    'tray.servers': 'Servers',
+    'remoteServer.configInvalid': 'The remote server configuration is invalid. Ekko Studio is using the local server.',
+    'remoteServer.switchFailed': 'Could not save the selected server.',
+    'remoteServer.unreachable': 'Cannot reach the remote server',
+    'remoteServer.connecting': 'Connecting to the remote server...',
   },
   zh: {
     'tray.show': '显示 Ekko Studio',
@@ -181,6 +191,11 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'loginReset.successMessage': '登录已重置为 {username} / {password}。',
     'loginReset.failedTitle': '重置登录失败',
     'loginReset.failedMessage': '无法重置桌面端登录。',
+    'tray.servers': '服务器',
+    'remoteServer.configInvalid': '远程服务器配置无效。Ekko Studio 正在使用本地服务器。',
+    'remoteServer.switchFailed': '无法保存所选服务器。',
+    'remoteServer.unreachable': '无法连接到远程服务器',
+    'remoteServer.connecting': '正在连接远程服务器...',
   },
   'zh-TW': {
     'tray.show': '顯示 Ekko Studio',
@@ -240,6 +255,11 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'loginReset.successMessage': '登入已重置為 {username} / {password}。',
     'loginReset.failedTitle': '重置登入失敗',
     'loginReset.failedMessage': '無法重置桌面端登入。',
+    'tray.servers': '伺服器',
+    'remoteServer.configInvalid': '遠端伺服器設定無效。Ekko Studio 正在使用本機伺服器。',
+    'remoteServer.switchFailed': '無法儲存所選伺服器。',
+    'remoteServer.unreachable': '無法連線到遠端伺服器',
+    'remoteServer.connecting': '正在連線到遠端伺服器...',
   },
   ja: {
     'tray.show': 'Ekko Studio を表示',
@@ -299,6 +319,11 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'loginReset.successMessage': 'Login has been reset to {username} / {password}.',
     'loginReset.failedTitle': 'Login reset failed',
     'loginReset.failedMessage': 'Could not reset the desktop login.',
+    'tray.servers': 'サーバー',
+    'remoteServer.configInvalid': 'リモートサーバーの設定が無効です。Ekko Studio はローカルサーバーを使用しています。',
+    'remoteServer.switchFailed': '選択したサーバーを保存できませんでした。',
+    'remoteServer.unreachable': 'リモートサーバーに接続できません',
+    'remoteServer.connecting': 'リモートサーバーに接続しています...',
   },
   ko: {
     'tray.show': 'Ekko Studio 표시',
@@ -358,6 +383,11 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'loginReset.successMessage': 'Login has been reset to {username} / {password}.',
     'loginReset.failedTitle': 'Login reset failed',
     'loginReset.failedMessage': 'Could not reset the desktop login.',
+    'tray.servers': '서버',
+    'remoteServer.configInvalid': '원격 서버 구성이 올바르지 않습니다. Ekko Studio가 로컬 서버를 사용합니다.',
+    'remoteServer.switchFailed': '선택한 서버를 저장할 수 없습니다.',
+    'remoteServer.unreachable': '원격 서버에 연결할 수 없습니다',
+    'remoteServer.connecting': '원격 서버에 연결하는 중...',
   },
   fr: {
     'tray.show': 'Afficher Ekko Studio',
@@ -417,6 +447,11 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'loginReset.successMessage': 'Login has been reset to {username} / {password}.',
     'loginReset.failedTitle': 'Login reset failed',
     'loginReset.failedMessage': 'Could not reset the desktop login.',
+    'tray.servers': 'Serveurs',
+    'remoteServer.configInvalid': 'La configuration du serveur distant est invalide. Ekko Studio utilise le serveur local.',
+    'remoteServer.switchFailed': 'Impossible de sauvegarder le serveur selectionne.',
+    'remoteServer.unreachable': 'Impossible de joindre le serveur distant',
+    'remoteServer.connecting': 'Connexion au serveur distant...',
   },
   es: {
     'tray.show': 'Mostrar Ekko Studio',
@@ -476,6 +511,11 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'loginReset.successMessage': 'Login has been reset to {username} / {password}.',
     'loginReset.failedTitle': 'Login reset failed',
     'loginReset.failedMessage': 'Could not reset the desktop login.',
+    'tray.servers': 'Servidores',
+    'remoteServer.configInvalid': 'La configuracion del servidor remoto no es valida. Ekko Studio usa el servidor local.',
+    'remoteServer.switchFailed': 'No se pudo guardar el servidor seleccionado.',
+    'remoteServer.unreachable': 'No se puede conectar con el servidor remoto',
+    'remoteServer.connecting': 'Conectando con el servidor remoto...',
   },
   de: {
     'tray.show': 'Ekko Studio anzeigen',
@@ -535,6 +575,11 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'loginReset.successMessage': 'Login has been reset to {username} / {password}.',
     'loginReset.failedTitle': 'Login reset failed',
     'loginReset.failedMessage': 'Could not reset the desktop login.',
+    'tray.servers': 'Server',
+    'remoteServer.configInvalid': 'Die Konfiguration des Remote-Servers ist ungultig. Ekko Studio verwendet den lokalen Server.',
+    'remoteServer.switchFailed': 'Der ausgewahlte Server konnte nicht gespeichert werden.',
+    'remoteServer.unreachable': 'Remote-Server nicht erreichbar',
+    'remoteServer.connecting': 'Verbindung zum Remote-Server wird hergestellt...',
   },
   pt: {
     'tray.show': 'Mostrar Ekko Studio',
@@ -594,6 +639,11 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'loginReset.successMessage': 'Login has been reset to {username} / {password}.',
     'loginReset.failedTitle': 'Login reset failed',
     'loginReset.failedMessage': 'Could not reset the desktop login.',
+    'tray.servers': 'Servidores',
+    'remoteServer.configInvalid': 'A configuracao do servidor remoto e invalida. Ekko Studio esta usando o servidor local.',
+    'remoteServer.switchFailed': 'Nao foi possivel salvar o servidor selecionado.',
+    'remoteServer.unreachable': 'Nao foi possivel conectar ao servidor remoto',
+    'remoteServer.connecting': 'Conectando ao servidor remoto...',
   },
 }
 
