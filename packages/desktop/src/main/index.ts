@@ -35,6 +35,7 @@ import { parseHermesCliArgs, runBundledHermesCli } from './hermes-cli'
 import { installSelectionContextMenu } from './selection-context-menu'
 import { groupChatAgentLinkPopupResponse } from './group-chat-agent-popup'
 import { isTrustedDesktopAppUrl, normalizeExternalHttpUrl } from './window-open-policy'
+import { loadRemoteServerConfig, writeActiveRemoteServer, type RemoteServer, type RemoteServerConfig } from './remote-server-config'
 import {
   ensureDesktopRuntime,
   isDesktopRuntimeReady,
@@ -76,6 +77,8 @@ let petWindow: BrowserWindow | null = null
 let petWindowLoadPromise: Promise<void> | null = null
 const chatWindows = new Map<string, BrowserWindow>()
 let serverUrl: string | null = null
+// Loaded once at startup; `active` set means remote mode (no local server, updater or shims).
+let remoteConfig: RemoteServerConfig = { active: null, servers: [], error: null }
 let tray: Tray | null = null
 let appShutdownPromise: Promise<void> | null = null
 let isBootstrapping = false
@@ -359,7 +362,7 @@ function showDesktopMessageBox(options: MessageBoxOptions) {
 }
 
 async function handleResetDefaultLogin() {
-  if (isResettingLogin || (isBootstrapping && !serverUrl)) return
+  if (remoteConfig.active || isResettingLogin || (isBootstrapping && !serverUrl)) return
 
   const choice = await showDesktopMessageBox({
     type: 'warning',
@@ -415,6 +418,7 @@ async function handleResetDefaultLogin() {
 function updateTrayMenu() {
   if (!tray) return
   const isVisible = !!mainWindow && mainWindow.isVisible()
+  const remote = remoteConfig.active
   const menu = Menu.buildFromTemplate([
     {
       label: isVisible ? t('tray.hide') : t('tray.show'),
@@ -427,23 +431,37 @@ function updateTrayMenu() {
         updateTrayMenu()
       },
     },
-    {
-      label: t('tray.checkForUpdates'),
-      click: () => {
-        checkForDesktopUpdates(true).catch(err => {
-          console.error('[tray] update check failed:', err)
-        })
+    // Remote mode: the updater would install upstream builds and reset-login restarts the local server.
+    ...(remote ? [] : [
+      {
+        label: t('tray.checkForUpdates'),
+        click: () => {
+          checkForDesktopUpdates(true).catch(err => {
+            console.error('[tray] update check failed:', err)
+          })
+        },
       },
-    },
-    {
-      label: isResettingLogin ? t('loginReset.resetting') : t('tray.resetLogin'),
-      enabled: !isResettingLogin && (!isBootstrapping || !!serverUrl),
-      click: () => {
-        handleResetDefaultLogin().catch(err => {
-          console.error('[tray] reset login failed:', err)
-        })
+      {
+        label: isResettingLogin ? t('loginReset.resetting') : t('tray.resetLogin'),
+        enabled: !isResettingLogin && (!isBootstrapping || !!serverUrl),
+        click: () => {
+          handleResetDefaultLogin().catch(err => {
+            console.error('[tray] reset login failed:', err)
+          })
+        },
       },
-    },
+    ]),
+    ...(remote && remoteConfig.servers.length > 1 ? [{
+      label: t('tray.servers'),
+      submenu: remoteConfig.servers.map(server => ({
+        label: server.name,
+        type: 'radio' as const,
+        checked: server.name === remote.name,
+        click: () => {
+          void switchRemoteServer(server)
+        },
+      })),
+    }] : []),
     {
       label: t('tray.openAtLogin'),
       type: 'checkbox',
@@ -460,6 +478,43 @@ function updateTrayMenu() {
     },
   ])
   tray.setContextMenu(menu)
+}
+
+async function openRemoteServer(server: RemoteServer): Promise<void> {
+  serverUrl = server.url
+  updateTrayMenu()
+  try {
+    if (mainWindow) await mainWindow.loadURL(mainRouteUrl() || server.url)
+    await loadPetWindowRoute()
+  } catch (err) {
+    console.error(`[remote-server] failed to open ${server.url}:`, err)
+    await loadServiceFailurePage(new Error(`Cannot reach remote server ${server.url}: ${err instanceof Error ? err.message : String(err)}`))
+  }
+}
+
+async function switchRemoteServer(server: RemoteServer): Promise<void> {
+  if (server.name === remoteConfig.active?.name) return
+  try {
+    writeActiveRemoteServer(app.getPath('userData'), server.name)
+  } catch (err) {
+    console.error('[remote-server] failed to save the active server:', err)
+    updateTrayMenu()
+    await showDesktopMessageBox({
+      type: 'error',
+      buttons: [t('common.ok')],
+      defaultId: 0,
+      title: 'Ekko Studio',
+      message: t('remoteServer.switchFailed'),
+      detail: err instanceof Error ? err.message : String(err),
+    })
+    return
+  }
+  remoteConfig = { ...remoteConfig, active: server }
+  // Chat windows show sessions of the previous server.
+  for (const chatWindow of [...chatWindows.values()]) {
+    if (!chatWindow.isDestroyed()) chatWindow.close()
+  }
+  await openRemoteServer(server)
 }
 
 function createTray() {
@@ -1036,7 +1091,7 @@ async function recoverUnexpectedWebUiExit(details: { code: number | null; signal
   if (!serverUrl) await loadServiceFailurePage(error)
 }
 
-ipcMain.handle('hermes-desktop:get-token', () => getToken())
+ipcMain.handle('hermes-desktop:get-token', () => (remoteConfig.active ? '' : getToken()))
 ipcMain.handle('hermes-desktop:restart-app', event => {
   if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
     throw new Error('Desktop restart can only be requested from the main window')
@@ -1313,6 +1368,7 @@ ipcMain.handle('hermes-desktop:notify-completion', (_event, payload?: { title?: 
   return true
 })
 ipcMain.handle('hermes-desktop:retry-bootstrap', async (_event, source?: RuntimeDownloadSource) => {
+  if (remoteConfig.active) return openRemoteServer(remoteConfig.active)
   if (serverUrl) {
     await mainWindow?.loadURL(mainRouteUrl() || serverUrl)
     return
@@ -1361,22 +1417,38 @@ function runDesktopApp() {
       console.warn('[desktop] failed to migrate the Windows login item:', error)
     }
     installMicrophonePermissionHandler()
+    remoteConfig = loadRemoteServerConfig(app.getPath('userData'))
     createTray()
     await createWindow()
     await initializeDesktopBrowser().catch(error => {
       console.error('[desktop-browser] failed to initialize:', error)
     })
-    void bootstrap()
-    initAutoUpdater({
-      beforeQuitAndInstall: prepareAppShutdown,
-      onInstallFailure: async () => {
-        await prepareAppShutdown()
-        app.relaunch()
-        appLifecycle.finalizeExit(0)
-      },
-      onStateChange: broadcastDesktopUpdateState,
-      onShowProgress: showMainWindow,
-    })
+    if (remoteConfig.error) {
+      console.warn(`[remote-server] ${remoteConfig.error}; using the local server`)
+      void dialog.showMessageBox({
+        type: 'error',
+        buttons: [t('common.ok')],
+        defaultId: 0,
+        title: 'Ekko Studio',
+        message: t('remoteServer.configInvalid'),
+        detail: remoteConfig.error,
+      })
+    }
+    if (remoteConfig.active) {
+      void openRemoteServer(remoteConfig.active)
+    } else {
+      void bootstrap()
+      initAutoUpdater({
+        beforeQuitAndInstall: prepareAppShutdown,
+        onInstallFailure: async () => {
+          await prepareAppShutdown()
+          app.relaunch()
+          appLifecycle.finalizeExit(0)
+        },
+        onStateChange: broadcastDesktopUpdateState,
+        onShowProgress: showMainWindow,
+      })
+    }
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
         void createWindow()
