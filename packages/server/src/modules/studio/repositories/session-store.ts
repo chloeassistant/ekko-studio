@@ -922,11 +922,6 @@ export function addMessage(msg: {
   return messageId
 }
 
-export function deleteMessage(sessionId: string, messageId: number): void {
-  if (!isSqliteAvailable()) return
-  getDb()!.prepare(`DELETE FROM ${MESSAGES_TABLE} WHERE session_id = ? AND id = ?`).run(sessionId, messageId)
-}
-
 export function addMessages(msgs: Array<{
   session_id: string
   role: string

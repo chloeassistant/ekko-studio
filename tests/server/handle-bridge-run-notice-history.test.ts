@@ -27,8 +27,7 @@ vi.mock('../../packages/server/src/modules/studio/public/runs/prompt', () => ({
 vi.mock('../../packages/server/src/modules/studio/repositories/session-store', () => ({
   HIDDEN_DISPLAY_ROLE: 'hidden',
   getSession: vi.fn(() => ({ id: 'session-1', profile: 'default', model: '', provider: '', history_revision: 0 })),
-  getSessionContextMessages: vi.fn((_sessionId: string, options: { afterId?: number } = {}) =>
-    mocks.rows.filter(row => options.afterId == null || Number(row.id) > options.afterId)),
+  getSessionContextMessages: vi.fn(() => mocks.rows),
   getSessionContextMessage: vi.fn(),
   getFirstSessionMessageByRole: vi.fn(),
   getSessionMessageCountByRole: vi.fn(() => 0),
@@ -37,9 +36,6 @@ vi.mock('../../packages/server/src/modules/studio/repositories/session-store', (
     const id = mocks.rows.length + 1
     mocks.rows.push({ ...row, id })
     return id
-  }),
-  deleteMessage: vi.fn((_sessionId: string, id: number) => {
-    mocks.rows = mocks.rows.filter(row => row.id !== id)
   }),
   updateSession: vi.fn(),
   updateSessionStats: vi.fn(),
@@ -136,14 +132,14 @@ function roles(messages: ChatMessage[]) {
   return messages.map(message => [message.role, message.content])
 }
 
-function makeBridge(events: Record<string, unknown>[] = []) {
+function makeBridge(events: Record<string, unknown>[] = [], terminal: Record<string, unknown> = { status: 'completed', output: 'ok' }) {
   return {
     chat: vi.fn(async (_sessionId: string, _input: unknown, _history: ChatMessage[]) => ({ run_id: 'run-1', status: 'started' })),
     contextEstimate: vi.fn(async () => ({ token_count: 10, fixed_context_tokens: 5, message_count: 0, tool_count: 0, system_prompt_chars: 1 })),
     compressionRespond: vi.fn(async (_requestId: string, _body: { messages?: ChatMessage[] }) => undefined),
     streamOutput: vi.fn(async function* () {
       if (events.length) yield { run_id: 'run-1', done: false, status: 'running', events }
-      yield { run_id: 'run-1', done: true, status: 'completed', output: 'ok' }
+      yield { run_id: 'run-1', done: true, ...terminal }
     }),
   }
 }
@@ -217,11 +213,16 @@ describe('handle-bridge-run input of automatic turns', () => {
     expect(mocks.rows).toEqual(PREVIOUS_TURN)
   })
 
-  it('removes the hidden input when the notice run fails before any reply', async () => {
-    const bridge = { ...makeBridge(), chat: vi.fn(async () => { throw new Error('bridge down') }) }
-    await runTurn(NOTICE_RUN, true, bridge)
+  it.each([
+    ['a terminal error chunk without text', { status: 'error', error: 'provider unavailable', output: '' }],
+    ['result.failed', { status: 'completed', output: '', result: { failed: true, error: 'agent failed' } }],
+  ])('does not resend the input of a notice run that ended with %s', async (_label, terminal) => {
+    await runTurn(NOTICE_RUN, true, makeBridge([], terminal))
 
-    expect(mocks.rows).toEqual(PREVIOUS_TURN)
+    const next = makeBridge()
+    await runTurn({ input: 'What changed?' }, false, next)
+
+    expect(roles(next.chat.mock.calls[0][2])).toEqual(PREVIOUS_TURN_HISTORY)
   })
 
   it('keeps the previous human turn when the bridge compresses during a notice run', async () => {
