@@ -7,7 +7,7 @@ import { withTaskPlanTurnContext } from '../task-plan-runs'
 
 import type { Server, Socket } from 'socket.io'
 import { getSystemPrompt } from '../../public/runs/prompt'
-import { getFirstSessionMessageByRole, getSession, getSessionMessageCountByRole, createSession, addMessage, updateSession, updateSessionStats } from '../../repositories/session-store'
+import { HIDDEN_DISPLAY_ROLE, getFirstSessionMessageByRole, getSession, getSessionMessageCountByRole, createSession, addMessage, updateSession, updateSessionStats } from '../../repositories/session-store'
 import { logger, bridgeLogger } from '../../public/logging'
 import { normalizeTokenUsage, recordSessionUsage } from '../usage/usage-recorder'
 import type {
@@ -595,9 +595,12 @@ export async function handleBridgeRun(
   const storageRole = shouldStoreInputInsteadOfDisplay ? 'user' : displayRole
   const displayRoleForStorage = shouldStoreInputInsteadOfDisplay ? displayRole : null
   const displayContentForStorage = shouldStoreInputInsteadOfDisplay ? inputStr : null
+  // Automatic turns (plugin notices, background callbacks, goal continuations) show nothing in the chat,
+  // but their verbatim input is stored as a hidden user row so the stored history keeps alternating.
+  const hiddenInput = displayInput === null && data.storage_message?.trim() ? data.storage_message : undefined
   // Only a turn that stored its input as a user row may cut the latest user row from history;
-  // otherwise that row is the previous human turn (plugin notices, background callbacks, plain commands).
-  const currentInputStoredAsUser = shouldPersistUserMessage && storageRole === 'user'
+  // otherwise that row is the previous human turn (plain commands stored with role 'command').
+  const currentInputStoredAsUser = (shouldPersistUserMessage && storageRole === 'user') || hiddenInput !== undefined
   let messageId: number | string | undefined
 
   if (shouldPersistUserMessage) {
@@ -639,6 +642,12 @@ export async function handleBridgeRun(
     const previewText = displayInput === null ? extractTextForPreview(input) : extractTextForPreview(displayInput || input)
     const preview = previewText.replace(/[\r\n]/g, ' ').substring(0, 100)
     createSession({ id: session_id, profile, source: runSource, user_id: socketUser?.id, model: resolvedModel, provider: selectedProvider, reasoning_effort: reasoningEffort || '', title: preview, workspace, category_id: data.category_id, push_enabled: data.push_enabled })
+  }
+  if (hiddenInput !== undefined) {
+    // No message.created or peer echo: the user is not notified about an automatic input.
+    const hiddenRow = { session_id, role: 'user', content: hiddenInput, display_role: HIDDEN_DISPLAY_ROLE, display_content: null, timestamp: now }
+    state.messages.push({ ...hiddenRow, id: state.messages.length + 1, runMarker, run_marker: runMarker })
+    addMessage(hiddenRow)
   }
 
   socket.join(`session:${session_id}`)
@@ -881,7 +890,7 @@ export async function handleBridgeRun(
         runSource,
         workspace,
         currentInputTokens,
-        shouldPersistUserMessage && displayRole === 'user',
+        (shouldPersistUserMessage && displayRole === 'user') || hiddenInput !== undefined,
         data.model_groups,
         runMetadata,
         currentInputStoredAsUser,
