@@ -7,7 +7,7 @@ import { withTaskPlanTurnContext } from '../task-plan-runs'
 
 import type { Server, Socket } from 'socket.io'
 import { getSystemPrompt } from '../../public/runs/prompt'
-import { HIDDEN_DISPLAY_ROLE, getFirstSessionMessageByRole, getSession, getSessionMessageCountByRole, createSession, addMessage, updateSession, updateSessionStats } from '../../repositories/session-store'
+import { HIDDEN_DISPLAY_ROLE, deleteMessage, getFirstSessionMessageByRole, getSession, getSessionContextMessages, getSessionMessageCountByRole, createSession, addMessage, updateSession, updateSessionStats } from '../../repositories/session-store'
 import { logger, bridgeLogger } from '../../public/logging'
 import { normalizeTokenUsage, recordSessionUsage } from '../usage/usage-recorder'
 import type {
@@ -643,12 +643,6 @@ export async function handleBridgeRun(
     const preview = previewText.replace(/[\r\n]/g, ' ').substring(0, 100)
     createSession({ id: session_id, profile, source: runSource, user_id: socketUser?.id, model: resolvedModel, provider: selectedProvider, reasoning_effort: reasoningEffort || '', title: preview, workspace, category_id: data.category_id, push_enabled: data.push_enabled })
   }
-  if (hiddenInput !== undefined) {
-    // No message.created or peer echo: the user is not notified about an automatic input.
-    const hiddenRow = { session_id, role: 'user', content: hiddenInput, display_role: HIDDEN_DISPLAY_ROLE, display_content: null, timestamp: now }
-    state.messages.push({ ...hiddenRow, id: state.messages.length + 1, runMarker, run_marker: runMarker })
-    addMessage(hiddenRow)
-  }
 
   socket.join(`session:${session_id}`)
   if (shouldPersistUserMessage) {
@@ -721,6 +715,15 @@ export async function handleBridgeRun(
     })
     if (state.queue.length > 0) dequeueNextQueuedRun(socket, session_id, profile)
     return
+  }
+
+  // Stored only once the turn really runs: an abandoned input would be resent by the next human turn.
+  let hiddenMessageId: number | undefined
+  if (hiddenInput !== undefined) {
+    // No message.created or peer echo: the user is not notified about an automatic input.
+    const hiddenRow = { session_id, role: 'user', content: hiddenInput, display_role: HIDDEN_DISPLAY_ROLE, display_content: null, timestamp: now }
+    state.messages.push({ ...hiddenRow, id: state.messages.length + 1, runMarker, run_marker: runMarker })
+    hiddenMessageId = addMessage(hiddenRow)
   }
 
   const history = callbackContext
@@ -965,6 +968,11 @@ export async function handleBridgeRun(
     state.events = []
     state.bridgePendingToolCallMarkup = undefined
     flushBridgePendingToDb(state, session_id, runMarker)
+    if (hiddenMessageId !== undefined && getSessionContextMessages(session_id, { afterId: hiddenMessageId, limit: 1 }).length === 0) {
+      // Failed before any reply: drop the hidden input so the next human turn does not resend it.
+      deleteMessage(session_id, hiddenMessageId)
+      state.messages = state.messages.filter(message => !(message.runMarker === runMarker && message.display_role === HIDDEN_DISPLAY_ROLE))
+    }
     updateSessionStats(session_id)
     const message = err instanceof Error ? err.message : String(err)
     const errUsage = await calcAndUpdateUsage(session_id, state, emit)

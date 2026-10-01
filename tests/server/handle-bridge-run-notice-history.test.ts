@@ -27,7 +27,8 @@ vi.mock('../../packages/server/src/modules/studio/public/runs/prompt', () => ({
 vi.mock('../../packages/server/src/modules/studio/repositories/session-store', () => ({
   HIDDEN_DISPLAY_ROLE: 'hidden',
   getSession: vi.fn(() => ({ id: 'session-1', profile: 'default', model: '', provider: '', history_revision: 0 })),
-  getSessionContextMessages: vi.fn(() => mocks.rows),
+  getSessionContextMessages: vi.fn((_sessionId: string, options: { afterId?: number } = {}) =>
+    mocks.rows.filter(row => options.afterId == null || Number(row.id) > options.afterId)),
   getSessionContextMessage: vi.fn(),
   getFirstSessionMessageByRole: vi.fn(),
   getSessionMessageCountByRole: vi.fn(() => 0),
@@ -36,6 +37,9 @@ vi.mock('../../packages/server/src/modules/studio/repositories/session-store', (
     const id = mocks.rows.length + 1
     mocks.rows.push({ ...row, id })
     return id
+  }),
+  deleteMessage: vi.fn((_sessionId: string, id: number) => {
+    mocks.rows = mocks.rows.filter(row => row.id !== id)
   }),
   updateSession: vi.fn(),
   updateSessionStats: vi.fn(),
@@ -203,6 +207,21 @@ describe('handle-bridge-run input of automatic turns', () => {
     await runTurn({ input: 'What changed?' }, false, bridge)
 
     expect(roles(bridge.chat.mock.calls[0][2])).toEqual(PREVIOUS_TURN_HISTORY)
+  })
+
+  it('does not store the input of a background callback that cannot run without its origin context', async () => {
+    const bridge = { ...makeBridge(), completeBackgroundNotification: vi.fn(async () => undefined) }
+    await runTurn({ ...NOTICE_RUN, background_delegation_id: 'delegation-1', background_claim_id: 'claim-1' }, true, bridge)
+
+    expect(bridge.chat).not.toHaveBeenCalled()
+    expect(mocks.rows).toEqual(PREVIOUS_TURN)
+  })
+
+  it('removes the hidden input when the notice run fails before any reply', async () => {
+    const bridge = { ...makeBridge(), chat: vi.fn(async () => { throw new Error('bridge down') }) }
+    await runTurn(NOTICE_RUN, true, bridge)
+
+    expect(mocks.rows).toEqual(PREVIOUS_TURN)
   })
 
   it('keeps the previous human turn when the bridge compresses during a notice run', async () => {

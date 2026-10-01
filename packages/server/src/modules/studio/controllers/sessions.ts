@@ -463,7 +463,8 @@ export async function getConversationMessages(ctx: any) {
   if (denySessionAccess(ctx, detail)) return
   const messages = (detail.messages || [])
     .filter(m => {
-      if (humanOnly && ((m.role !== 'user' && m.role !== 'assistant') || m.display_role === HIDDEN_DISPLAY_ROLE)) return false
+      if (m.display_role === HIDDEN_DISPLAY_ROLE) return false
+      if (humanOnly && m.role !== 'user' && m.role !== 'assistant') return false
       if (!m.content) return false
       return true
     })

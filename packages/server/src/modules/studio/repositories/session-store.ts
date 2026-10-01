@@ -14,6 +14,7 @@ import { agentFamilyForRuntime, isAgentRuntime } from '../contracts/agents/runti
 export const HIDDEN_DISPLAY_ROLE = 'hidden'
 const VISIBLE_ROW = `COALESCE(display_role, '') <> '${HIDDEN_DISPLAY_ROLE}'`
 const VISIBLE_M_ROW = `COALESCE(m.display_role, '') <> '${HIDDEN_DISPLAY_ROLE}'`
+const VISIBLE_SEARCH_ROW = `COALESCE(search_message.display_role, '') <> '${HIDDEN_DISPLAY_ROLE}'`
 
 // Re-export types for compatibility with sessions-db.ts consumers
 export interface HermesSessionRow {
@@ -768,7 +769,7 @@ export function searchSessions(
            WHEN ${previewMatchSql} THEN 2
            WHEN EXISTS (
              SELECT 1 FROM ${MESSAGES_TABLE} search_message
-             WHERE search_message.session_id = s.id AND ${messageContentMatchSql}
+             WHERE search_message.session_id = s.id AND ${VISIBLE_SEARCH_ROW} AND ${messageContentMatchSql}
            ) THEN 3
            WHEN EXISTS (
              SELECT 1 FROM ${MESSAGES_TABLE} search_message
@@ -795,7 +796,7 @@ export function searchSessions(
   const msgQuery = db.prepare(
     `SELECT search_message.id, search_message.content, search_message.tool_name
      FROM ${MESSAGES_TABLE} search_message
-     WHERE search_message.session_id = ? AND ${messageMatchSql}
+     WHERE search_message.session_id = ? AND ${VISIBLE_SEARCH_ROW} AND ${messageMatchSql}
      ORDER BY search_message.timestamp, search_message.id
      LIMIT 1`,
   )
@@ -919,6 +920,11 @@ export function addMessage(msg: {
   const messageId = Number(result.lastInsertRowid)
   recordSkillUsageMessage(messageId, msg)
   return messageId
+}
+
+export function deleteMessage(sessionId: string, messageId: number): void {
+  if (!isSqliteAvailable()) return
+  getDb()!.prepare(`DELETE FROM ${MESSAGES_TABLE} WHERE session_id = ? AND id = ?`).run(sessionId, messageId)
 }
 
 export function addMessages(msgs: Array<{
