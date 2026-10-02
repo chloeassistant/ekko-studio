@@ -7,6 +7,7 @@ import os
 import posixpath
 import queue
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -177,6 +178,8 @@ class WorkerProcess:
 # Linux: 108 bytes, including the trailing NUL). Keep a small safety margin.
 _AF_UNIX_MAX_PATH = 104 if sys.platform == "darwin" else 108
 
+_WORKER_SOCKET_DIR_NAME = "hermes-agent-bridge-workers"
+
 
 def _worker_endpoint(key: str, namespace: str | None = None) -> str:
     namespace_key = f"{namespace or ''}\0{key}"
@@ -193,16 +196,20 @@ def _worker_endpoint(key: str, namespace: str | None = None) -> str:
         # touch mtime), silently deleting live worker sockets.
         if namespace and namespace.startswith("ipc://"):
             namespace_path = namespace[len("ipc://") :]
-            base_dir = str(Path(namespace_path).parent) if os.name == "nt" else posixpath.dirname(namespace_path)
+            if os.name == "nt":
+                parent = str(Path(namespace_path).parent)
+                base_dir = parent if parent not in ("", ".") else tempfile.gettempdir()
+            else:
+                base_dir = posixpath.dirname(namespace_path) or tempfile.gettempdir()
         else:
             base_dir = tempfile.gettempdir()
         # Join as text when the process is not Windows. pathlib.Path follows the
         # host flavour, and Python 3.13+ refuses to build a PosixPath on Windows
         # even when a caller is simulating a posix temp directory.
         sock_path = (
-            str(Path(base_dir) / "hermes-agent-bridge-workers" / f"{safe}.sock")
+            str(Path(base_dir) / _WORKER_SOCKET_DIR_NAME / f"{safe}.sock")
             if os.name == "nt"
-            else posixpath.join(base_dir, "hermes-agent-bridge-workers", f"{safe}.sock")
+            else posixpath.join(base_dir, _WORKER_SOCKET_DIR_NAME, f"{safe}.sock")
         )
         # A deep temp dir can push the socket path past the platform's sun_path
         # limit; the worker then fails to bind and exits before it can report
@@ -357,13 +364,41 @@ def _kill_windows_endpoint_occupants(endpoint: str) -> None:
         time.sleep(0.1)
 
 
+def _ensure_private_worker_dir(path: Path) -> None:
+    # Worker sockets now live next to the broker's own ipc:// socket, which
+    # can be a shared, world-writable location (e.g. /tmp). Keep the
+    # worker-socket directory itself private so another local user can't
+    # connect() to a profile worker. Never touch the broker socket's own
+    # parent dir — only the hermes-agent-bridge-workers subdirectory.
+    if os.name == "nt":
+        path.mkdir(parents=True, exist_ok=True)
+        return
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        path.mkdir(parents=True, exist_ok=True)
+        os.chmod(path, 0o700)
+        return
+    if st.st_uid != os.getuid():
+        raise RuntimeError(
+            f"refusing to use {path} for agent-bridge worker sockets: "
+            f"owned by uid {st.st_uid}, not the current process uid {os.getuid()}"
+        )
+    if stat.S_IMODE(st.st_mode) != 0o700:
+        os.chmod(path, 0o700)
+
+
 def _make_listen_socket(endpoint: str) -> socket.socket:
     _kill_windows_endpoint_occupants(endpoint)
     if endpoint.startswith("ipc://"):
         if not hasattr(socket, "AF_UNIX"):
             raise RuntimeError("ipc:// endpoints require Unix domain socket support; use tcp://host:port on this platform")
         sock_path = Path(endpoint.removeprefix("ipc://"))
-        sock_path.parent.mkdir(parents=True, exist_ok=True)
+        sock_dir = sock_path.parent
+        if sock_dir.name == _WORKER_SOCKET_DIR_NAME:
+            _ensure_private_worker_dir(sock_dir)
+        else:
+            sock_dir.mkdir(parents=True, exist_ok=True)
         try:
             sock_path.unlink(missing_ok=True)
         except OSError:
