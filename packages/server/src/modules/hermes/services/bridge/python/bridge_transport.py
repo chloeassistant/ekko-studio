@@ -185,13 +185,24 @@ def _worker_endpoint(key: str, namespace: str | None = None) -> str:
     forced_ipc = transport in {"ipc", "unix"}
     use_tcp = transport == "tcp" or (transport not in {"ipc", "unix"} and os.name == "nt")
     if not use_tcp:
+        # Co-locate worker sockets with the broker's own IPC socket so they
+        # live under the same directory Hermes/manager.ts already walks for
+        # cleanup (see killStaleIpcBridgeProcesses). tempfile.gettempdir()
+        # is Hermes's scratch dir, which gets pruned by mtime after 24h even
+        # while a worker is still listening on it (AF_UNIX sockets never
+        # touch mtime), silently deleting live worker sockets.
+        if namespace and namespace.startswith("ipc://"):
+            namespace_path = namespace[len("ipc://") :]
+            base_dir = str(Path(namespace_path).parent) if os.name == "nt" else posixpath.dirname(namespace_path)
+        else:
+            base_dir = tempfile.gettempdir()
         # Join as text when the process is not Windows. pathlib.Path follows the
         # host flavour, and Python 3.13+ refuses to build a PosixPath on Windows
         # even when a caller is simulating a posix temp directory.
         sock_path = (
-            str(Path(tempfile.gettempdir()) / "hermes-agent-bridge-workers" / f"{safe}.sock")
+            str(Path(base_dir) / "hermes-agent-bridge-workers" / f"{safe}.sock")
             if os.name == "nt"
-            else posixpath.join(tempfile.gettempdir(), "hermes-agent-bridge-workers", f"{safe}.sock")
+            else posixpath.join(base_dir, "hermes-agent-bridge-workers", f"{safe}.sock")
         )
         # A deep temp dir can push the socket path past the platform's sun_path
         # limit; the worker then fails to bind and exits before it can report
@@ -213,8 +224,6 @@ def _worker_endpoint(key: str, namespace: str | None = None) -> str:
         if os.name == "nt" and port >= 49152:
             port = 18780 + port_offset
         return f"tcp://127.0.0.1:{port}"
-    root = Path(tempfile.gettempdir()) / "hermes-agent-bridge-workers"
-    return f"ipc://{root / f'{safe}.sock'}"
 
 
 def _connect_bridge_socket(endpoint: str, timeout: float) -> socket.socket:
