@@ -150,7 +150,7 @@ print(json.dumps({"endpoint": endpoint}))
     expect(result.endpoint).toMatch(/^ipc:\/\/.*\.sock$/)
   })
 
-  it('falls back to a TCP endpoint when the temp dir pushes the socket path past sun_path', () => {
+  it('falls back to a TCP endpoint when the namespace dir pushes the socket path past sun_path', () => {
     const result = runPython(String.raw`
 import importlib.util
 import json
@@ -177,8 +177,9 @@ original_gettempdir = bridge_transport.tempfile.gettempdir
 original_transport = os.environ.pop("HERMES_AGENT_BRIDGE_WORKER_TRANSPORT", None)
 try:
     bridge_transport.os.name = "posix"
-    bridge_transport.tempfile.gettempdir = lambda: "/" + "/".join(["deep-temp-dir"] * 12)
-    endpoint = bridge_transport._worker_endpoint("default", "ipc:///tmp/hermes-agent-bridge.sock")
+    bridge_transport.tempfile.gettempdir = lambda: "/tmp"
+    deep_dir = "/" + "/".join(["deep-temp-dir"] * 12)
+    endpoint = bridge_transport._worker_endpoint("default", f"ipc://{deep_dir}/hermes-agent-bridge.sock")
 finally:
     bridge_transport.os.name = original_name
     bridge_transport.tempfile.gettempdir = original_gettempdir
@@ -192,5 +193,141 @@ print(json.dumps({"endpoint": endpoint}))
     const port = Number(result.endpoint.split(':').pop())
     expect(port).toBeGreaterThanOrEqual(18780)
     expect(port).toBeLessThan(19780)
+  })
+
+  it('places worker sockets next to the broker namespace socket, not under gettempdir()', () => {
+    const result = runPython(String.raw`
+import importlib.util
+import json
+import os
+import sys
+import types
+
+bridge_runtime = types.ModuleType("bridge_runtime")
+bridge_runtime._hidden_subprocess_kwargs = lambda: {}
+bridge_runtime._json_line_bytes = lambda req: (json.dumps(req) + "\n").encode("utf-8")
+bridge_runtime._platform_text_encoding = lambda: "utf-8"
+sys.modules["bridge_runtime"] = bridge_runtime
+
+spec = importlib.util.spec_from_file_location(
+    "bridge_transport",
+    "packages/server/src/modules/hermes/services/bridge/python/bridge_transport.py",
+)
+bridge_transport = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(bridge_transport)
+
+original_name = bridge_transport.os.name
+original_gettempdir = bridge_transport.tempfile.gettempdir
+original_transport = os.environ.pop("HERMES_AGENT_BRIDGE_WORKER_TRANSPORT", None)
+try:
+    bridge_transport.os.name = "posix"
+    # A Hermes-pruned scratch dir distinct from the broker's own namespace
+    # dir — the worker socket must NOT land here, only under the broker's dir.
+    bridge_transport.tempfile.gettempdir = lambda: "/other-tmp-pruned-by-hermes"
+    endpoint = bridge_transport._worker_endpoint("default", "ipc:///some/dir/agent-bridge.sock")
+finally:
+    bridge_transport.os.name = original_name
+    bridge_transport.tempfile.gettempdir = original_gettempdir
+    if original_transport is not None:
+        os.environ["HERMES_AGENT_BRIDGE_WORKER_TRANSPORT"] = original_transport
+
+print(json.dumps({"endpoint": endpoint}))
+`)
+
+    expect(result.endpoint).toMatch(/^ipc:\/\/\/some\/dir\/hermes-agent-bridge-workers\/[0-9a-f]{16}\.sock$/)
+  })
+
+  it('creates the worker socket directory as 0700, not under the shared broker dir', () => {
+    const result = runPython(String.raw`
+import importlib.util
+import json
+import os
+import shutil
+import stat
+import sys
+import tempfile
+import types
+
+bridge_runtime = types.ModuleType("bridge_runtime")
+bridge_runtime._hidden_subprocess_kwargs = lambda: {}
+bridge_runtime._json_line_bytes = lambda req: (json.dumps(req) + "\n").encode("utf-8")
+bridge_runtime._platform_text_encoding = lambda: "utf-8"
+sys.modules["bridge_runtime"] = bridge_runtime
+
+spec = importlib.util.spec_from_file_location(
+    "bridge_transport",
+    "packages/server/src/modules/hermes/services/bridge/python/bridge_transport.py",
+)
+bridge_transport = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(bridge_transport)
+
+tmp_dir = tempfile.mkdtemp(prefix="agent-bridge-ns-")
+os.chmod(tmp_dir, 0o755)
+server = None
+# Force a permissive umask so the test proves the code explicitly chmods
+# the worker-socket directory to 0700 instead of merely inheriting a
+# restrictive umask from the environment.
+old_umask = os.umask(0o022)
+try:
+    namespace = f"ipc://{tmp_dir}/agent-bridge.sock"
+    endpoint = bridge_transport._worker_endpoint("default", namespace)
+    server = bridge_transport._make_listen_socket(endpoint)
+    worker_dir = os.path.join(tmp_dir, "hermes-agent-bridge-workers")
+    mode = stat.S_IMODE(os.stat(worker_dir).st_mode)
+    print(json.dumps({"endpoint": endpoint, "mode": oct(mode)}))
+finally:
+    os.umask(old_umask)
+    if server is not None:
+        server.close()
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+`)
+
+    expect(result.endpoint).toMatch(/^ipc:\/\/.*hermes-agent-bridge-workers\/[0-9a-f]{16}\.sock$/)
+    expect(result.mode).toBe('0o700')
+  })
+
+  it('falls back to gettempdir() when the ipc namespace has no directory component', () => {
+    const result = runPython(String.raw`
+import importlib.util
+import json
+import os
+import sys
+import types
+
+bridge_runtime = types.ModuleType("bridge_runtime")
+bridge_runtime._hidden_subprocess_kwargs = lambda: {}
+bridge_runtime._json_line_bytes = lambda req: (json.dumps(req) + "\n").encode("utf-8")
+bridge_runtime._platform_text_encoding = lambda: "utf-8"
+sys.modules["bridge_runtime"] = bridge_runtime
+
+spec = importlib.util.spec_from_file_location(
+    "bridge_transport",
+    "packages/server/src/modules/hermes/services/bridge/python/bridge_transport.py",
+)
+bridge_transport = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(bridge_transport)
+
+original_name = bridge_transport.os.name
+original_gettempdir = bridge_transport.tempfile.gettempdir
+original_transport = os.environ.pop("HERMES_AGENT_BRIDGE_WORKER_TRANSPORT", None)
+try:
+    bridge_transport.os.name = "posix"
+    bridge_transport.tempfile.gettempdir = lambda: "/fallback-tmp"
+    # A relative ipc namespace (no directory component) has an empty
+    # posixpath.dirname(); must fall back to gettempdir(), not cwd.
+    endpoint = bridge_transport._worker_endpoint("default", "ipc://agent-bridge.sock")
+finally:
+    bridge_transport.os.name = original_name
+    bridge_transport.tempfile.gettempdir = original_gettempdir
+    if original_transport is not None:
+        os.environ["HERMES_AGENT_BRIDGE_WORKER_TRANSPORT"] = original_transport
+
+print(json.dumps({"endpoint": endpoint}))
+`)
+
+    expect(result.endpoint).toMatch(/^ipc:\/\/\/fallback-tmp\/hermes-agent-bridge-workers\/[0-9a-f]{16}\.sock$/)
   })
 })
