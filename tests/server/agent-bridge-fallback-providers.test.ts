@@ -56,6 +56,7 @@ bridge_runtime._resolve_runtime = lambda *_args, **_kwargs: {"provider": "primar
 bridge_runtime._suppress_bridge_platform_hint = lambda: None
 bridge_runtime._title_user_message = lambda value: value
 bridge_runtime._tool_names_from_definitions = lambda *_args, **_kwargs: []
+bridge_runtime._worker_profile = lambda: "default"
 
 @contextlib.contextmanager
 def _profile_env(_profile):

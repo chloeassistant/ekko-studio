@@ -192,6 +192,10 @@ class FakeDb:
         with self.lock:
             return list(self.messages.get(session_id, []))
 
+    def get_session(self, session_id):
+        with self.lock:
+            return {"id": session_id} if session_id in self.sessions else None
+
     def append_message(self, session_id, role, content=None, **kwargs):
         with self.lock:
             self.messages.setdefault(session_id, []).append({
@@ -610,7 +614,7 @@ assert process_registry_module.process_registry.completion_queue.get_nowait() ==
 `)
   })
 
-  it('accepts Hermes plugin notices only for loaded sessions and drains each once', () => {
+  it('accepts Hermes plugin notices for loaded and persisted sessions and drains each once', () => {
     runPython(String.raw`
 ${harness}
 
@@ -624,14 +628,16 @@ hermes_cli_pkg.plugins = plugins_module
 sys.modules["hermes_cli"] = hermes_cli_pkg
 sys.modules["hermes_cli.plugins"] = plugins_module
 
-pool, _fake_db = make_pool()
+pool, fake_db = make_pool()
 pool.install_plugin_message_host()
 [inject] = hosts.values()
+fake_db.create_session("session-1")
 pool._sessions["session-1"] = bridge.AgentSession(session_id="session-1", agent=types.SimpleNamespace())
 notice = '<system-notice run="car_0123456789abcdef" source="coding-agent">Run finished.</system-notice>'
 
 assert inject(session_key="session-1", content=notice, plugin_id="coding-agent-mcp-companion") is True
 assert inject(session_key="session-unknown", content=notice, plugin_id="coding-agent-mcp-companion") is False
+assert inject(session_key="agent:main:telegram:dm:4242", content=notice, plugin_id="coding-agent-mcp-companion") is False
 assert inject(session_key="session-1", content="  ", plugin_id="coding-agent-mcp-companion") is False
 
 polled = pool.poll_background()
@@ -640,11 +646,15 @@ assert [(n["session_id"], n["content"], n["plugin_id"]) for n in polled["plugin_
 ]
 assert pool.poll_background()["plugin_notices"] == []
 
-# A notice whose session was unloaded stays queued until a poll owns that session again.
-assert inject(session_key="session-1", content=notice) is True
+# Idle GC destroyed the cached session; Ekko still owns the persisted row, so the notice is
+# accepted and polled out without waiting for the next user message to reload the session.
 del pool._sessions["session-1"]
-assert pool.poll_background()["plugin_notices"] == []
-assert [n["content"] for n in pool.poll_background(["session-1"])["plugin_notices"]] == [notice]
+assert inject(session_key="session-1", content=notice) is True
+assert [n["content"] for n in pool.poll_background()["plugin_notices"]] == [notice]
+
+# A persisted session the worker never loaded is still refused once Ekko deleted its row.
+fake_db.sessions.discard("session-1")
+assert inject(session_key="session-1", content=notice) is False
 
 pool.clear_plugin_message_host()
 assert hosts == {}

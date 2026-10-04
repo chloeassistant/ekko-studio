@@ -85,6 +85,7 @@ bridge_runtime._resolve_model = lambda cfg: str(cfg.get("model") or "")
 bridge_runtime._resolve_runtime = lambda model, provider=None: {"provider": provider or "openai"}
 bridge_runtime._suppress_bridge_platform_hint = lambda: None
 bridge_runtime._tool_names_from_definitions = lambda *_args, **_kwargs: []
+bridge_runtime._worker_profile = lambda: "default"
 
 @contextlib.contextmanager
 def profile_env(_profile):
