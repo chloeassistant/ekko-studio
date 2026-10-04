@@ -1178,6 +1178,11 @@ class AgentPool:
                 for session_id in (recover_session_ids or [])
                 if str(session_id).strip()
             )
+            # Snapshot read, matching shutdown()'s convention of reading `session.running` after
+            # releasing `self._lock` rather than taking each session's own lock: a bool read is
+            # cheap to get stale by one poll tick, and a stale "running" only costs one extra
+            # deferred poll, never a dropped notice.
+            running_session_ids = {sid for sid, s in self._sessions.items() if s.running}
             session_payloads = []
             for session in self._sessions.values():
                 events = list(session.background_events)
@@ -1263,7 +1268,7 @@ class AgentPool:
                     flush=True,
                 )
 
-        plugin_notices.extend(self._drain_process_notices(loaded_session_ids))
+        plugin_notices.extend(self._drain_process_notices(loaded_session_ids, running_session_ids))
 
         return {
             "sessions": session_payloads,
@@ -1272,7 +1277,9 @@ class AgentPool:
             "pending_count": pending_notification_count,
         }
 
-    def _drain_process_notices(self, loaded_session_ids: set[str]) -> list[dict[str, Any]]:
+    def _drain_process_notices(
+        self, loaded_session_ids: set[str], running_session_ids: set[str],
+    ) -> list[dict[str, Any]]:
         """Hermes background-process events (`completion`, `watch_match`, `heartbeat`, ...) for
         bridge sessions, formatted and shaped as plugin notices.
 
@@ -1282,6 +1289,14 @@ class AgentPool:
         loaded OR merely persisted: the idle GC destroys the cached AgentSession long before a
         long job exits, which is the common case for these notices. Async-delegation events are
         refused so they stay with the claim/complete ledger flow in `poll_background`.
+
+        A loaded session currently `running` a turn is deferred (left on the queue, not drained):
+        that turn can still read the same process inline via `poll`/`wait`/`log` before it ends.
+        Draining now would hand Node a notice for a turn already queued behind the busy one
+        (`schedulePluginNotice` queues on a busy session), so after the turn ends it would start a
+        second turn over a result the first turn already delivered. Once the turn ends, the next
+        poll drains it, and Hermes' own `skip_poll_observed` (default True) drops it there if that
+        turn observed the exit inline — no duplicate, no Node-side identity tracking needed.
         """
         notices: list[dict[str, Any]] = []
         try:
@@ -1292,6 +1307,8 @@ class AgentPool:
                     return False
                 session_key = str(evt.get("session_key") or "").strip()
                 if not session_key:
+                    return False
+                if session_key in running_session_ids:
                     return False
                 return session_key in loaded_session_ids or self._session_persisted(session_key)
 

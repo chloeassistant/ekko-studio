@@ -755,6 +755,77 @@ assert polled["plugin_notices"] == []
 `)
   })
 
+  it('defers a background process notice while its session is busy, drops it once the turn observes it', () => {
+    runPython(String.raw`
+${harness}
+
+import queue
+
+completion_queue = queue.Queue()
+poll_observed = set()
+
+def format_process_notification(event):
+    return "notice:" + str(event.get("session_id") or "")
+
+def drain_notifications(session_key="", owns_event=None, *, skip_poll_observed=True):
+    # Mirrors tools/process_registry.ProcessRegistry.drain_notifications: ownership gate first,
+    # then the poll-observed skip for a completion the turn already read inline via poll/wait/log.
+    results, requeue = [], []
+    while not completion_queue.empty():
+        event = completion_queue.get_nowait()
+        needs_proof = event.get("type") == "async_delegation" or bool(event.get("session_key"))
+        if needs_proof and owns_event is not None and not owns_event(event):
+            requeue.append(event)
+            continue
+        if (event.get("type") == "completion" and skip_poll_observed
+                and event.get("session_id") in poll_observed):
+            continue
+        if text := format_process_notification(event):
+            results.append((event, text))
+    for event in requeue:
+        completion_queue.put(event)
+    return results
+
+process_registry_module = types.ModuleType("tools.process_registry")
+process_registry_module.process_registry = types.SimpleNamespace(
+    completion_queue=completion_queue,
+    drain_notifications=drain_notifications,
+)
+process_registry_module.format_process_notification = format_process_notification
+sys.modules["tools.process_registry"] = process_registry_module
+
+pool, _fake_db = make_pool()
+session = bridge.AgentSession(session_id="session-busy", agent=types.SimpleNamespace())
+session.running = True
+pool._sessions["session-busy"] = session
+
+completion_queue.put({"type": "completion", "session_key": "session-busy", "session_id": "proc_busy", "exit_code": 0})
+
+# Busy turn still owns the session: the completion stays on the queue, not handed to Node as a
+# notice that would queue a second turn behind the one already reading this exact result.
+polled = pool.poll_background()
+assert polled["plugin_notices"] == []
+assert completion_queue.qsize() == 1
+
+# The running turn observes the same process inline (poll/wait/log) before it ends.
+poll_observed.add("proc_busy")
+session.running = False
+
+# Idle now: the next poll drains it, but Hermes' own skip_poll_observed drops the duplicate —
+# no second autonomous turn over an already-delivered result.
+polled = pool.poll_background()
+assert polled["plugin_notices"] == []
+assert completion_queue.empty()
+
+# An unobserved completion for the same now-idle session is still delivered normally.
+completion_queue.put({"type": "completion", "session_key": "session-busy", "session_id": "proc_other", "exit_code": 0})
+polled = pool.poll_background()
+assert [(n["session_id"], n["content"]) for n in polled["plugin_notices"]] == [
+    ("session-busy", "notice:proc_other"),
+]
+`)
+  })
+
   it('acknowledges a user-cancelled delegation completion without starting a new parent turn', () => {
     runPython(String.raw`
 ${harness}
