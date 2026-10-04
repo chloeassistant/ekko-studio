@@ -661,6 +661,171 @@ assert hosts == {}
 `)
   })
 
+  it('delivers background process completions to loaded and persisted bridge sessions', () => {
+    runPython(String.raw`
+${harness}
+
+import queue
+
+completion_queue = queue.Queue()
+
+def format_process_notification(event):
+    if event.get("type") == "async_delegation":
+        return "delegation payload"
+    return "notice:" + str(event.get("session_id") or "")
+
+def drain_notifications(session_key="", owns_event=None, *, skip_poll_observed=True):
+    # Mirrors tools/process_registry.ProcessRegistry.drain_notifications routing: an async
+    # delegation or any event carrying a session_key needs positive ownership proof and is
+    # requeued without it; an event with no routing key at all is consumed unasked.
+    results, requeue = [], []
+    while not completion_queue.empty():
+        event = completion_queue.get_nowait()
+        needs_proof = event.get("type") == "async_delegation" or bool(event.get("session_key"))
+        if needs_proof and owns_event is not None and not owns_event(event):
+            requeue.append(event)
+            continue
+        if text := format_process_notification(event):
+            results.append((event, text))
+    for event in requeue:
+        completion_queue.put(event)
+    return results
+
+process_registry_module = types.ModuleType("tools.process_registry")
+process_registry_module.process_registry = types.SimpleNamespace(
+    completion_queue=completion_queue,
+    drain_notifications=drain_notifications,
+)
+process_registry_module.format_process_notification = format_process_notification
+sys.modules["tools.process_registry"] = process_registry_module
+
+claimed = []
+async_module = types.ModuleType("tools.async_delegation")
+async_module.claim_event_delivery = lambda event, consumer: claimed.append(event) or "claim-1"
+async_module.complete_completion_delivery = lambda delegation_id, claim_id: True
+sys.modules["tools.async_delegation"] = async_module
+
+pool, fake_db = make_pool()
+pool._sessions["session-loaded"] = bridge.AgentSession(session_id="session-loaded", agent=types.SimpleNamespace())
+# Idle-GC'd: no cached AgentSession, only the persisted row Ekko still owns.
+fake_db.create_session("session-persisted")
+
+for event in (
+    {"type": "completion", "session_key": "session-loaded", "session_id": "proc_loaded", "exit_code": 0},
+    {"type": "completion", "session_key": "session-persisted", "session_id": "proc_persisted", "exit_code": 0},
+    {"type": "completion", "session_key": "session-unknown", "session_id": "proc_unknown", "exit_code": 0},
+    {"type": "completion", "session_id": "proc_unaddressed", "exit_code": 0},
+    {"type": "async_delegation", "delegation_id": "deleg-idle", "session_key": "session-persisted",
+     "parent_session_id": "session-persisted", "status": "completed"},
+):
+    completion_queue.put(event)
+
+polled = pool.poll_background()
+assert [(n["session_id"], n["content"], n["plugin_id"]) for n in polled["plugin_notices"]] == [
+    ("session-loaded", "notice:proc_loaded", "hermes-process"),
+    ("session-persisted", "notice:proc_persisted", "hermes-process"),
+]
+assert polled["notifications"] == []
+assert claimed == []
+
+# Foreign, unaddressed and async-delegation events stay queued for their own consumer.
+left = []
+while not completion_queue.empty():
+    left.append(completion_queue.get_nowait())
+assert sorted(str(e.get("session_id") or e.get("delegation_id")) for e in left) == [
+    "deleg-idle", "proc_unaddressed", "proc_unknown",
+]
+for event in left:
+    completion_queue.put(event)
+assert pool.poll_background()["plugin_notices"] == []
+
+# An async delegation for a loaded session still goes through the claim flow, never as a notice.
+completion_queue.put({
+    "type": "async_delegation",
+    "delegation_id": "deleg-loaded",
+    "session_key": "session-loaded",
+    "parent_session_id": "session-loaded",
+    "status": "completed",
+})
+polled = pool.poll_background()
+assert [(n["delegation_id"], n["claim_id"], n["message"]) for n in polled["notifications"]] == [
+    ("deleg-loaded", "claim-1", "delegation payload"),
+]
+assert polled["plugin_notices"] == []
+`)
+  })
+
+  it('defers a background process notice while its session is busy, drops it once the turn observes it', () => {
+    runPython(String.raw`
+${harness}
+
+import queue
+
+completion_queue = queue.Queue()
+poll_observed = set()
+
+def format_process_notification(event):
+    return "notice:" + str(event.get("session_id") or "")
+
+def drain_notifications(session_key="", owns_event=None, *, skip_poll_observed=True):
+    # Mirrors tools/process_registry.ProcessRegistry.drain_notifications: ownership gate first,
+    # then the poll-observed skip for a completion the turn already read inline via poll/wait/log.
+    results, requeue = [], []
+    while not completion_queue.empty():
+        event = completion_queue.get_nowait()
+        needs_proof = event.get("type") == "async_delegation" or bool(event.get("session_key"))
+        if needs_proof and owns_event is not None and not owns_event(event):
+            requeue.append(event)
+            continue
+        if (event.get("type") == "completion" and skip_poll_observed
+                and event.get("session_id") in poll_observed):
+            continue
+        if text := format_process_notification(event):
+            results.append((event, text))
+    for event in requeue:
+        completion_queue.put(event)
+    return results
+
+process_registry_module = types.ModuleType("tools.process_registry")
+process_registry_module.process_registry = types.SimpleNamespace(
+    completion_queue=completion_queue,
+    drain_notifications=drain_notifications,
+)
+process_registry_module.format_process_notification = format_process_notification
+sys.modules["tools.process_registry"] = process_registry_module
+
+pool, _fake_db = make_pool()
+session = bridge.AgentSession(session_id="session-busy", agent=types.SimpleNamespace())
+session.running = True
+pool._sessions["session-busy"] = session
+
+completion_queue.put({"type": "completion", "session_key": "session-busy", "session_id": "proc_busy", "exit_code": 0})
+
+# Busy turn still owns the session: the completion stays on the queue, not handed to Node as a
+# notice that would queue a second turn behind the one already reading this exact result.
+polled = pool.poll_background()
+assert polled["plugin_notices"] == []
+assert completion_queue.qsize() == 1
+
+# The running turn observes the same process inline (poll/wait/log) before it ends.
+poll_observed.add("proc_busy")
+session.running = False
+
+# Idle now: the next poll drains it, but Hermes' own skip_poll_observed drops the duplicate —
+# no second autonomous turn over an already-delivered result.
+polled = pool.poll_background()
+assert polled["plugin_notices"] == []
+assert completion_queue.empty()
+
+# An unobserved completion for the same now-idle session is still delivered normally.
+completion_queue.put({"type": "completion", "session_key": "session-busy", "session_id": "proc_other", "exit_code": 0})
+polled = pool.poll_background()
+assert [(n["session_id"], n["content"]) for n in polled["plugin_notices"]] == [
+    ("session-busy", "notice:proc_other"),
+]
+`)
+  })
+
   it('acknowledges a user-cancelled delegation completion without starting a new parent turn', () => {
     runPython(String.raw`
 ${harness}
