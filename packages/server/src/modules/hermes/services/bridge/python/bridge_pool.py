@@ -42,6 +42,7 @@ from bridge_runtime import (
     _suppress_bridge_platform_hint,
     _title_user_message,
     _tool_names_from_definitions,
+    _worker_profile,
 )
 
 
@@ -191,7 +192,7 @@ class AgentPool:
         self._compression_requests: dict[str, queue.Queue[dict[str, Any]]] = {}
         self._background_notification_claims: dict[tuple[str, str], dict[str, Any]] = {}
         self._suppressed_background_delegations: set[str] = set()
-        # Hermes plugin notices (ctx.inject_message) accepted for loaded sessions, drained by poll_background.
+        # Hermes plugin notices (ctx.inject_message) accepted for bridge sessions, drained by poll_background.
         self._plugin_notices: list[dict[str, Any]] = []
         self._plugin_host_owner = object()
         self._clarify_requests: dict[str, queue.Queue[str]] = {}
@@ -1110,12 +1111,20 @@ class AgentPool:
         return payload
 
     def inject_plugin_message(self, *, session_key: str, content: str, plugin_id: str = "") -> bool:
-        """Hermes TUI-host injector: accept a plugin notice only for a session loaded in this pool."""
+        """Hermes TUI-host injector: accept a plugin notice for a bridge session, loaded or idle.
+
+        The worker destroys sessions idle past its GC timeout, so loaded-only acceptance refuses
+        notices for sessions Ekko still owns and the plugin retries until the user types again.
+        A messaging-gateway session key never matches a persisted session row id, so an unknown
+        key still returns False and falls through to a co-resident gateway.
+        """
         if not isinstance(content, str) or not content.strip():
             return False
         with self._lock:
-            if session_key not in self._sessions:
-                return False
+            loaded = session_key in self._sessions
+        if not loaded and not self._session_persisted(session_key):
+            return False
+        with self._lock:
             self._plugin_notices.append({
                 "session_id": session_key,
                 "content": content,
@@ -1123,6 +1132,24 @@ class AgentPool:
                 "received_at": time.time(),
             })
         return True
+
+    def _session_persisted(self, session_id: str) -> bool:
+        """Whether this worker profile's Hermes session DB holds a row for this session id.
+
+        Every bridge session is written there by `_prepersist_user_message`, so the row outlives
+        the in-memory AgentSession the idle GC destroys. Read outside `_lock`: the DB call must not
+        block running turns, and a session destroyed concurrently is still Ekko's to deliver to.
+        """
+        key = str(session_id or "").strip()
+        if not key:
+            return False
+        get_session = getattr(self._db.get_for_profile(_worker_profile()), "get_session", None)
+        if not callable(get_session):
+            return False
+        try:
+            return bool(get_session(key))
+        except Exception:
+            return False
 
     def install_plugin_message_host(self) -> None:
         """Publish this worker as the process TUI host so plugin notices reach bridge sessions."""
@@ -1162,9 +1189,10 @@ class AgentPool:
                         "tasks": _jsonable(tasks),
                         "running_count": sum(1 for task in tasks if task.get("status") == "running"),
                     })
-            # Same ownership rule as delegation events; notices for other sessions stay queued.
-            plugin_notices = [notice for notice in self._plugin_notices if notice["session_id"] in loaded_session_ids]
-            self._plugin_notices = [notice for notice in self._plugin_notices if notice["session_id"] not in loaded_session_ids]
+            # Node owns start-vs-drop for every notice: it can load an unloaded session's state,
+            # so withholding notices for sessions this worker no longer caches only delays them.
+            plugin_notices = self._plugin_notices
+            self._plugin_notices = []
 
         notifications: list[dict[str, Any]] = []
         pending_notification_count = 0
