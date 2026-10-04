@@ -1169,7 +1169,8 @@ class AgentPool:
             pass
 
     def poll_background(self, recover_session_ids: list[Any] | None = None) -> dict[str, Any]:
-        """Drain worker-level UI telemetry and claim owned async completions."""
+        """Drain worker-level UI telemetry, claim owned async completions, and route owned
+        background-process notices (terminal `notify`/`watch_patterns`) to their bridge session."""
         with self._lock:
             loaded_session_ids = set(self._sessions)
             loaded_session_ids.update(
@@ -1262,12 +1263,58 @@ class AgentPool:
                     flush=True,
                 )
 
+        plugin_notices.extend(self._drain_process_notices(loaded_session_ids))
+
         return {
             "sessions": session_payloads,
             "notifications": notifications,
             "plugin_notices": plugin_notices,
             "pending_count": pending_notification_count,
         }
+
+    def _drain_process_notices(self, loaded_session_ids: set[str]) -> list[dict[str, Any]]:
+        """Hermes background-process events (`completion`, `watch_match`, `heartbeat`, ...) for
+        bridge sessions, formatted and shaped as plugin notices.
+
+        `process_registry.drain_notifications` already applies the poll-observed skip, the
+        subagent-owned suppression and `format_process_notification`, so the only question left
+        here is ownership. A notice is ours when its `session_key` names a bridge session that is
+        loaded OR merely persisted: the idle GC destroys the cached AgentSession long before a
+        long job exits, which is the common case for these notices. Async-delegation events are
+        refused so they stay with the claim/complete ledger flow in `poll_background`.
+        """
+        notices: list[dict[str, Any]] = []
+        try:
+            from tools.process_registry import process_registry
+
+            def owns_event(evt: dict[str, Any]) -> bool:
+                if evt.get("type") == "async_delegation":
+                    return False
+                session_key = str(evt.get("session_key") or "").strip()
+                if not session_key:
+                    return False
+                return session_key in loaded_session_ids or self._session_persisted(session_key)
+
+            for event, message in process_registry.drain_notifications(owns_event=owns_event):
+                session_key = str(event.get("session_key") or "").strip()
+                if not session_key:
+                    # An event carrying no routing key at all never reaches `owns_event`; hand it
+                    # back rather than steal a notice addressed to another consumer.
+                    process_registry.completion_queue.put(event)
+                    continue
+                notices.append({
+                    "session_id": session_key,
+                    "content": message,
+                    "plugin_id": "hermes-process",
+                    "received_at": time.time(),
+                })
+        except Exception as exc:
+            print(
+                f"[hermes_bridge] background process notice poll failed: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+        return notices
 
     def complete_background_notification(self, delegation_id: str, claim_id: str) -> dict[str, Any]:
         from tools.async_delegation import complete_completion_delivery
