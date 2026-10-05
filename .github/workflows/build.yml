@@ -39,8 +39,20 @@ jobs:
       - name: Check repository harness
         run: npm run harness:check
 
+      # The Hermes clarify contract test drives the real tools/clarify_tool.py. Only the root modules
+      # and tools/ are needed for that import, so check out just those, without history.
+      - name: Checkout hermes-agent for the clarify contract test
+        uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          path: .ci/hermes-agent
+          fetch-depth: 1
+          sparse-checkout: tools
+
       - name: Test with coverage
         run: npm run test:coverage
+        env:
+          HERMES_AGENT_ROOT: ${{ github.workspace }}/.ci/hermes-agent
 
       - name: Build
         run: npm run build
