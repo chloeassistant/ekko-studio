@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { isNativeCodingAgent, isGlobalOnlyCodingAgent } from '@/utils/agent-catalog'
 import PageSidebar from "@/components/layout/PageSidebar.vue"
 import { usePageSidebarState } from "@/composables/usePageSidebar"
 import { usePageLoadingState } from '@/composables/usePageLoading'
@@ -132,7 +133,10 @@ const manualRoomLinkInput = ref<HTMLInputElement | null>(null)
 const showMemberRail = ref(true)
 const editingAgent = ref<RoomAgent | null>(null)
 const isSavingAgent = ref(false)
+const isLoadingAgentForm = ref(false)
+let agentDrawerLoadSequence = 0
 const agentStatusSnapshot = ref<AgentStatusSnapshot | null>(null)
+let agentStatusRequest: Promise<void> | null = null
 const showRoomSettingsModal = ref(false)
 const showUserProfileModal = ref(false)
 const userProfileName = ref('')
@@ -247,23 +251,18 @@ const profileOptions = computed(() =>
     profilesStore.profiles.map(p => ({ label: p.name, value: p.name }))
 )
 
-type GroupAgentType = 'hermes' | 'ekko' | 'codex' | 'claude' | 'pi' | 'grok' | 'opencode' | 'dsh' | 'cursor'
+type GroupAgentType = 'hermes' | 'ekko' | 'codex' | 'claude' | 'pi' | 'grok' | 'opencode' | 'dsh' | 'cursor' | 'antigravity' | 'qwen' | 'kimi' | 'codebuddy' | 'qoder' | 'copilot' | 'zcode'
 
 const groupAgentTypeDefinitions = GROUP_AGENT_OPTIONS
 
-const groupAgentTypeOptions = computed(() => groupAgentTypeDefinitions.map((option) => {
-    const disabled = !isAgentStatusAvailable(agentStatusSnapshot.value, option.value)
-    return {
-        ...option,
-        disabled,
-        label: disabled ? `${option.label} · ${t('codingAgents.notInstalled')}` : option.label,
-    }
-}))
+const groupAgentTypeOptions = computed(() => groupAgentTypeDefinitions.filter(option =>
+    isAgentStatusAvailable(agentStatusSnapshot.value, option.value)
+))
 
 const firstAvailableGroupAgentType = computed<GroupAgentType | null>(() =>
-    groupAgentTypeOptions.value.find(option => !option.disabled)?.value || null
+    groupAgentTypeOptions.value[0]?.value || null
 )
-const supportsGlobalAgentMode = computed(() => ['claude', 'codex', 'pi', 'grok', 'opencode', 'dsh', 'cursor'].includes(selectedAgentType.value))
+const supportsGlobalAgentMode = computed(() => ['claude', 'codex', 'pi', 'grok', 'opencode', 'dsh', 'cursor', 'antigravity', 'qwen', 'kimi', 'codebuddy', 'qoder', 'copilot', 'zcode'].includes(selectedAgentType.value))
 const usesGlobalAgentMode = computed(() => supportsGlobalAgentMode.value && selectedAgentMode.value === 'global')
 const agentModeOptions = computed(() => [
     { label: t('codingAgents.launchModeGlobal'), value: 'global' },
@@ -282,12 +281,16 @@ function warnAgentUnavailable(agent: GroupAgentType) {
     message.warning(t('codingAgents.installRequired', { agent: groupAgentDisplayName(agent) }))
 }
 
-async function refreshAgentAvailability() {
-    try {
-        agentStatusSnapshot.value = await fetchAgentStatusSnapshot()
-    } catch {
-        agentStatusSnapshot.value = null
-    }
+function refreshAgentAvailability(): Promise<void> {
+    if (agentStatusRequest) return agentStatusRequest
+    agentStatusRequest = (async () => {
+        try {
+            agentStatusSnapshot.value = await fetchAgentStatusSnapshot()
+        } catch {
+            agentStatusSnapshot.value = null
+        }
+    })().finally(() => { agentStatusRequest = null })
+    return agentStatusRequest
 }
 
 function getAgentModelGroups(profile: string) {
@@ -303,7 +306,7 @@ function getAgentModelGroups(profile: string) {
                         ? 'pi'
                         : selectedAgentType.value === 'grok'
                             ? 'grok'
-                            : selectedAgentType.value === 'cursor'
+                            : (isGlobalOnlyCodingAgent(selectedAgentType.value) || (selectedAgentType.value === 'antigravity' || isNativeCodingAgent(selectedAgentType.value)))
                                 ? 'cursor'
                             : selectedAgentType.value === 'dsh' ? 'dsh' : selectedAgentType.value === 'opencode'
                                 ? 'opencode'
@@ -499,6 +502,7 @@ const agentAvatarPreview = computed(() =>
 
 const canConfirmAddAgent = computed(() =>
     Boolean(
+        !isLoadingAgentForm.value &&
         isGroupAgentAvailable(selectedAgentType.value) &&
         (selectedAgentType.value !== 'dsh' || (selectedRuntimePreset.value && selectedRuntimePresetReady.value)) &&
         selectedProfile.value &&
@@ -1361,6 +1365,7 @@ function currentAgentPresetInput(): GroupAgentPresetInput | null {
 }
 
 async function loadAgentPresets() {
+    if (isLoadingAgentPresets.value) return
     isLoadingAgentPresets.value = true
     agentPresetLoadError.value = ''
     try {
@@ -1378,6 +1383,7 @@ function openAgentPresetSelection() {
     pendingAgentPresetId.value = selectedAgentPresetId.value
     agentPresetSearch.value = ''
     showAgentPresetDialog.value = true
+    void loadAgentPresets()
 }
 
 function openAgentPresetManager() {
@@ -1385,6 +1391,7 @@ function openAgentPresetManager() {
     pendingAgentPresetId.value = null
     agentPresetSearch.value = ''
     showAgentPresetDialog.value = true
+    void loadAgentPresets()
 }
 
 function closeAgentPresetDialog() {
@@ -1399,6 +1406,7 @@ function selectAgentPresetForDialog(preset: GroupAgentPreset) {
 }
 
 function confirmAgentPresetSelection() {
+    if (isLoadingAgentForm.value || isLoadingAgentPresets.value) return
     const preset = pendingAgentPreset.value
     if (!preset?.available) return
     applyAgentPreset(preset.id)
@@ -1483,24 +1491,15 @@ async function deleteAgentPreset() {
 }
 
 function closeAgentDrawer() {
+    agentDrawerLoadSequence++
+    isLoadingAgentForm.value = false
     closeAgentPresetDialog()
     showAddAgentDrawer.value = false
     editingAgent.value = null
     resetAgentForm()
 }
 
-async function handleAddAgent() {
-    if (!currentRoomCanManage.value) return
-    await Promise.all([
-        profilesStore.fetchProfiles(),
-        appStore.loadModels(),
-        loadAgentPresets(),
-        refreshAgentAvailability(),
-    ])
-    editingAgent.value = null
-    resetAgentForm()
-    selectedRuntimePreset.value = undefined
-    selectedRuntimePresetReady.value = false
+function initializeNewAgentSelection() {
     selectedAgentType.value = firstAvailableGroupAgentType.value || 'hermes'
     selectedProfile.value =
         profilesStore.activeProfileName ||
@@ -1508,8 +1507,32 @@ async function handleAddAgent() {
         profilesStore.profiles[0]?.name ||
         'default'
     syncAgentModelSelection(selectedProfile.value)
-    selectedAgentReasoningEffort.value = ''
+}
+
+async function loadAgentFormOptions() {
+    const sequence = ++agentDrawerLoadSequence
+    const roomId = store.currentRoomId
+    isLoadingAgentForm.value = true
+    try {
+        await Promise.all([
+            profilesStore.fetchProfiles(),
+            appStore.loadModels(),
+            refreshAgentAvailability(),
+        ])
+        if (sequence !== agentDrawerLoadSequence || !showAddAgentDrawer.value || roomId !== store.currentRoomId) return
+        if (!editingAgent.value) initializeNewAgentSelection()
+    } finally {
+        if (sequence === agentDrawerLoadSequence) isLoadingAgentForm.value = false
+    }
+}
+
+function handleAddAgent() {
+    if (!currentRoomCanManage.value || showAddAgentDrawer.value) return
+    editingAgent.value = null
+    resetAgentForm()
+    initializeNewAgentSelection()
     showAddAgentDrawer.value = true
+    void loadAgentFormOptions()
 }
 
 function randomAgentAvatarSeed() {
@@ -1554,15 +1577,9 @@ async function handleAgentAvatarFileChange(event: Event) {
     }
 }
 
-async function handleEditAgent(agent: RoomAgent) {
-    if (!currentRoomCanManage.value) return
-    await Promise.all([
-        profilesStore.fetchProfiles(),
-        appStore.loadModels(),
-        loadAgentPresets(),
-        refreshAgentAvailability(),
-    ])
-    selectedAgentPresetId.value = null
+function handleEditAgent(agent: RoomAgent) {
+    if (!currentRoomCanManage.value || showAddAgentDrawer.value) return
+    resetAgentForm()
     editingAgent.value = agent
     selectedAgentType.value = agent.agent || 'hermes'
     selectedAgentMode.value = agent.agentMode === 'global' ? 'global' : 'scoped'
@@ -1580,6 +1597,7 @@ async function handleEditAgent(agent: RoomAgent) {
     agentDescription.value = agent.description || ''
     agentAvatar.value = parseStoredAvatar(agent.avatar)
     showAddAgentDrawer.value = true
+    void loadAgentFormOptions()
 }
 
 onMounted(() => {
@@ -1609,6 +1627,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+    agentDrawerLoadSequence++
     hideInlineSummaryStatus()
     window.removeEventListener('hermes:preview-workspace-file', handleWorkspaceFilePreviewRequest)
     window.removeEventListener('hermes:preview-group-attachment', handleGroupAttachmentPreviewRequest)
@@ -1643,6 +1662,7 @@ async function loadRoomSummaryState(roomId: string) {
 
 watch(() => store.currentRoomId, (roomId, previousRoomId) => {
     if (roomId === previousRoomId) return
+    if (showAddAgentDrawer.value) closeAgentDrawer()
     if (inlineSummaryStatus.value?.roomId !== roomId) hideInlineSummaryStatus()
     roomSummaryState.value = null
     roomSummaryAnchor.value = null
@@ -2779,7 +2799,7 @@ function handleClarifyKeydown(event: KeyboardEvent) {
             </div>
         </div>
 
-        <NDrawer v-model:show="showCreateModal" placement="right" :width="workspacePanelMobile ? '100%' : 520">
+        <NDrawer v-model:show="showCreateModal" placement="right" width="var(--studio-drawer-width)">
             <NDrawerContent :title="t('groupChat.createRoom')" closable>
                 <CreateRoomForm @submit="handleCreateRoom" @cancel="showCreateModal = false" />
             </NDrawerContent>
@@ -2788,17 +2808,19 @@ function handleClarifyKeydown(event: KeyboardEvent) {
         <NDrawer
             :show="showAddAgentDrawer"
             placement="right"
-            :width="workspacePanelMobile ? '100%' : 520"
-            :z-index="1000"
+            width="var(--studio-drawer-width)"
+            :z-index="1100"
             :mask-closable="!isSavingAgent"
             :close-on-esc="!isSavingAgent && !showAgentPresetDialog"
-            :trap-focus="!showAgentPresetDialog"
             @update:show="!$event && closeAgentDrawer()"
         >
             <NDrawerContent
                 :title="editingAgent ? t('groupChat.editAgentTitle', { name: editingAgent.name }) : t('groupChat.addAgent')"
                 :closable="!isSavingAgent"
             >
+                    <div v-if="isLoadingAgentForm" class="agent-form-loading" role="status">
+                        <NSpin size="small" :description="t('common.loading')" />
+                    </div>
                     <div v-if="!editingAgent" class="agent-preset-entry">
                         <NButton secondary block @click="openAgentPresetSelection">
                             {{ t('groupChat.chooseAgentPreset') }}
@@ -2845,6 +2867,8 @@ function handleClarifyKeydown(event: KeyboardEvent) {
                         <NSelect
                             :value="selectedAgentType"
                             :options="groupAgentTypeOptions"
+                            :loading="isLoadingAgentForm"
+                            :disabled="isLoadingAgentForm"
                             @update:value="handleAgentTypeChange"
                         />
                     </div>
@@ -2854,18 +2878,21 @@ function handleClarifyKeydown(event: KeyboardEvent) {
                             :value="selectedProfile"
                             :options="profileOptions"
                             :placeholder="t('groupChat.selectProfile')"
+                            :loading="isLoadingAgentForm"
+                            :disabled="isLoadingAgentForm"
                             filterable
                             @update:value="handleAgentProfileChange"
                         />
                     </div>
                     <DshSessionPresetSelect v-if="selectedAgentType === 'dsh'" class="form-group"
-                        v-model="selectedRuntimePreset" :disabled="isSavingAgent"
+                        v-model="selectedRuntimePreset" :disabled="isSavingAgent || isLoadingAgentForm"
                         @valid="selectedRuntimePresetReady = $event" />
                     <div v-if="supportsGlobalAgentMode && selectedAgentType !== 'cursor'" class="form-group">
                         <label class="form-label">{{ t('codingAgents.launchModeScope') }}</label>
                         <NSelect
                             :value="selectedAgentMode"
                             :options="agentModeOptions"
+                            :disabled="isLoadingAgentForm"
                             @update:value="handleAgentModeChange"
                         />
                     </div>
@@ -2875,6 +2902,8 @@ function handleClarifyKeydown(event: KeyboardEvent) {
                             :value="selectedAgentProvider"
                             :options="agentProviderOptions"
                             :placeholder="t('models.selectProvider')"
+                            :loading="isLoadingAgentForm"
+                            :disabled="isLoadingAgentForm"
                             filterable
                             @update:value="handleAgentProviderChange"
                         />
@@ -2885,7 +2914,8 @@ function handleClarifyKeydown(event: KeyboardEvent) {
                             :value="selectedAgentModel"
                             :options="agentModelOptions"
                             :placeholder="t('models.selectModel')"
-                            :disabled="!selectedAgentProvider"
+                            :loading="isLoadingAgentForm"
+                            :disabled="isLoadingAgentForm || !selectedAgentProvider"
                             filterable
                             @update:value="handleAgentModelChange"
                         />
@@ -2895,6 +2925,7 @@ function handleClarifyKeydown(event: KeyboardEvent) {
                         <NSelect
                             v-model:value="selectedAgentApiMode"
                             :options="agentApiModeOptions"
+                            :disabled="isLoadingAgentForm"
                         />
                     </div>
                     <div v-if="!usesGlobalAgentMode" class="form-group">
@@ -2903,6 +2934,7 @@ function handleClarifyKeydown(event: KeyboardEvent) {
                             v-model:value="selectedAgentReasoningEffort"
                             :options="agentReasoningEffortOptions"
                             :placeholder="t('chat.reasoningEffort.tooltip')"
+                            :disabled="isLoadingAgentForm"
                         />
                     </div>
                     <div class="form-group">
@@ -2948,13 +2980,19 @@ function handleClarifyKeydown(event: KeyboardEvent) {
             </NDrawerContent>
         </NDrawer>
 
-        <Teleport to="body">
-            <div
-                v-if="showAgentPresetDialog"
-                class="modal-backdrop agent-preset-dialog-backdrop"
-                @click.self="closeAgentPresetDialog"
-            >
-                <div class="modal agent-preset-dialog">
+        <NModal
+            :show="showAgentPresetDialog"
+            :z-index="1110"
+            @update:show="!$event && closeAgentPresetDialog()"
+        >
+                <div
+                    class="modal agent-preset-dialog"
+                    role="dialog"
+                    aria-modal="true"
+                    :aria-label="agentPresetDialogMode === 'select'
+                        ? t('groupChat.chooseAgentPreset')
+                        : t('groupChat.manageAgentPresets')"
+                >
                     <h3>
                         {{ agentPresetDialogMode === 'select'
                             ? t('groupChat.chooseAgentPreset')
@@ -3009,7 +3047,7 @@ function handleClarifyKeydown(event: KeyboardEvent) {
                     <div v-if="agentPresetDialogMode === 'manage'" class="agent-preset-management-actions">
                         <NButton
                             secondary
-                            :disabled="!canConfirmAddAgent || isSavingAgentPreset"
+                            :disabled="!canConfirmAddAgent || isSavingAgentPreset || isLoadingAgentPresets"
                             :loading="isSavingAgentPreset && !pendingAgentPresetId"
                             @click="createAgentPresetFromCurrent"
                         >
@@ -3042,14 +3080,15 @@ function handleClarifyKeydown(event: KeyboardEvent) {
                         <NButton
                             v-if="agentPresetDialogMode === 'select'"
                             type="primary"
-                            :disabled="!pendingAgentPreset?.available"
+                            :disabled="isLoadingAgentForm || isLoadingAgentPresets || !pendingAgentPreset?.available"
                             @click="confirmAgentPresetSelection"
                         >
                             {{ t('groupChat.applyAgentPreset') }}
                         </NButton>
                     </div>
                 </div>
-            </div>
+        </NModal>
+        <Teleport to="body">
             <div v-if="showCloneModal" class="modal-backdrop" @click.self="showCloneModal = false">
                 <div class="modal">
                     <h3>{{ t('groupChat.cloneRoom') }}</h3>
@@ -3185,7 +3224,7 @@ function handleClarifyKeydown(event: KeyboardEvent) {
                 preset="dialog"
                 :title="t('chat.setWorkspaceTitle')"
                 class="workspace-modal"
-                style="width: 520px; max-width: 92vw"
+                style="width: var(--studio-workspace-picker-width)"
             >
                 <FolderPicker v-model="workspaceValue" />
                 <template #action>
@@ -3238,7 +3277,7 @@ function handleClarifyKeydown(event: KeyboardEvent) {
             <NDrawer
                 v-model:show="showRoomSettingsModal"
                 placement="right"
-                :width="workspacePanelMobile ? '100%' : 520"
+                width="var(--studio-drawer-width)"
             >
                 <NDrawerContent :title="t('groupChat.roomSettings')" closable>
                     <div class="room-settings-drawer">
@@ -4767,12 +4806,9 @@ export default defineComponent({ components: { CreateRoomForm } })
     }
 }
 
+.agent-form-loading,
 .agent-preset-entry {
     margin-bottom: 18px;
-}
-
-.agent-preset-dialog-backdrop {
-    z-index: 1010;
 }
 
 .agent-preset-dialog {
