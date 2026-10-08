@@ -7,6 +7,8 @@
 import type { Namespace, Socket } from 'socket.io'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { handleBridgeRun, resumeBridgeRun } from '../../packages/server/src/modules/studio/services/chat-run/handle-bridge-run'
+import { readConfigYamlForProfile } from '../../packages/server/src/modules/studio/public/profile-config'
+import { estimateUsageTokensFromMessages } from '../../packages/server/src/modules/studio/services/chat-run/usage'
 import type { PrimaryAgentBridgeClient } from '../../packages/server/src/modules/studio/public/chat-agent-runtime'
 import type { HermesMessageRow } from '../../packages/server/src/modules/studio/repositories/session-store'
 import type { ChatMessage } from '../../packages/server/src/modules/studio/services/context-compressor'
@@ -55,6 +57,7 @@ vi.mock('../../packages/server/src/modules/studio/services/context-compressor', 
 
 vi.mock('../../packages/server/src/modules/studio/repositories/usage-store', () => ({
   updateUsage: vi.fn(),
+  getUsage: vi.fn(),
 }))
 
 vi.mock('../../packages/server/src/modules/studio/public/logging', () => ({
@@ -259,5 +262,53 @@ describe('handle-bridge-run input of automatic turns', () => {
     expect(resumed.compressionRespond).toHaveBeenCalledTimes(1)
     expect(resumed.compressionRespond.mock.calls[0][0]).toBe('req-resume')
     expect(roles(resumed.compressionRespond.mock.calls[0][1].messages ?? [])).toEqual(PREVIOUS_TURN_HISTORY)
+  })
+
+  it('settles the run and continues the queue when the context window is too small before the run starts', async () => {
+    const { nsp, socket } = makeSockets()
+    const state: SessionState = { messages: [], isWorking: false, events: [], queue: [{ queue_id: 'q-1', input: 'retry' }] as SessionState['queue'] }
+    const sessionMap = new Map([['session-1', state]])
+    const dequeue = vi.fn()
+    const bridge = makeBridge()
+    const onEvent = vi.fn()
+    // Compression on, and 4 history rows estimated over the 128k trigger: too short to compress.
+    vi.mocked(readConfigYamlForProfile).mockImplementation(async () => ({}))
+    vi.mocked(estimateUsageTokensFromMessages).mockReturnValue({ inputTokens: 200_000, outputTokens: 0 })
+    try {
+      await handleBridgeRun(nsp, socket, { session_id: 'session-1', input: 'too big', onEvent }, 'default', sessionMap,
+        bridge as unknown as PrimaryAgentBridgeClient, false, vi.fn(), dequeue)
+    } finally {
+      vi.mocked(readConfigYamlForProfile).mockImplementation(async () => ({ compression: { enabled: false } }))
+      vi.mocked(estimateUsageTokensFromMessages).mockReturnValue({ inputTokens: 1, outputTokens: 1 })
+    }
+
+    expect(bridge.chat).not.toHaveBeenCalled()
+    expect(state).toMatchObject({ isWorking: false, activeRunMarker: undefined, runId: undefined })
+    expect(onEvent.mock.calls.filter(([event]) => event === 'run.failed')).toEqual([
+      ['run.failed', expect.objectContaining({ error: expect.stringContaining('Context window is too small') })],
+    ])
+    expect(dequeue).toHaveBeenCalledWith(socket, 'session-1')
+
+    // The dequeued retry runs on the now idle session.
+    const retry = makeBridge()
+    await handleBridgeRun(nsp, socket, { session_id: 'session-1', input: 'retry' }, 'default', sessionMap,
+      retry as unknown as PrimaryAgentBridgeClient, false, vi.fn(), dequeue)
+    expect(retry.chat).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps debug force-compress requests below threshold working', async () => {
+    // Stub of the compressor contract: an over-budget call with nothing to fold reports a too-small context.
+    mocks.compress.mockImplementationOnce(async (history: unknown[], ...args: unknown[]) => {
+      if ((args[3] as { overBudget?: boolean } | undefined)?.overBudget) {
+        throw Object.assign(new Error('Context window is too small'), { name: 'ContextWindowTooSmallError' })
+      }
+      return { messages: history, meta: { compressed: false, llmCompressed: false, verbatimCount: history.length, compressedStartIndex: -1 } }
+    })
+    const bridge = makeBridge([{ event: 'bridge.compression.requested', request_id: 'req-debug', focus_topic: 'debug_force_compress', approx_tokens: 100, messages: [] }])
+    await runTurn({ input: 'debug compress' }, false, bridge)
+
+    expect(bridge.compressionRespond).toHaveBeenCalledTimes(1)
+    expect(bridge.compressionRespond.mock.calls[0][1]).not.toHaveProperty('error')
+    expect(roles(bridge.compressionRespond.mock.calls[0][1].messages ?? [])).toEqual(PREVIOUS_TURN_HISTORY)
   })
 })
