@@ -29,6 +29,7 @@ import {
 } from '../../public/chat-agent-runtime'
 import { logger } from '../../public/logging'
 import { truncateToolResultForContext } from '../chat-run/tool-result-context'
+import { estimateUsageTokensFromMessages } from '../chat-run/usage'
 import {
   getCompressionSnapshot,
   saveCompressionSnapshot,
@@ -81,6 +82,8 @@ export interface CompressedResult {
 export interface SummarizerOptions {
   /** Manual compression folds small new segments too and reports summarizer failures. */
   force?: boolean
+  /** The caller already measured the context over budget; fold small new segments instead of skipping. */
+  overBudget?: boolean
   profile?: string
   model?: string | null
   provider?: string | null
@@ -203,21 +206,11 @@ export function countTokensForModel(text: string, model: string): number {
   }
 }
 
-function messageTokenEstimate(message: ChatMessage): number {
-  if (typeof message.content === 'string') return countTokens(message.content)
-  if (Array.isArray(message.content)) {
-    return countTokens(message.content.map(block => {
-      if (block.type === 'text') return block.text || ''
-      if (block.type === 'image') return `[Image: ${block.path || ''}]`
-      if (block.type === 'file') return `[File: ${block.path || ''}]`
-      return ''
-    }).join(''))
-  }
-  return 0
-}
-
+// Same counting as the run-level estimate (content, tool_calls, reasoning), so the compressor
+// cannot judge as under budget a context that the caller measured as over budget.
 function messagesTokenEstimate(messages: ChatMessage[]): number {
-  return messages.reduce((sum, message) => sum + messageTokenEstimate(message), 0)
+  const usage = estimateUsageTokensFromMessages(messages)
+  return usage.inputTokens + usage.outputTokens
 }
 
 function truncateTextToTokenBudget(text: string, tokenBudget: number): string {
@@ -840,7 +833,8 @@ export class ChatContextCompressor {
       ...newMessages,
     ]
     const force = typeof summarizer === 'object' && summarizer.force === true
-    const assembledOverBudget = force || messagesTokenEstimate(assembledWithPrevious) > this.config.triggerTokens
+    const overBudget = typeof summarizer === 'object' && summarizer.overBudget === true
+    const assembledOverBudget = force || overBudget || messagesTokenEstimate(assembledWithPrevious) > this.config.triggerTokens
     const canKeepTailWindow = newMessages.length > tailCount
 
     // If the new segment itself is too small to split but already over budget,

@@ -593,7 +593,8 @@ export const GROUP_CHAT_MESSAGE_WINDOW = 500
 const GROUP_CHAT_CONTEXT_MESSAGE_WINDOW = GROUP_CHAT_MESSAGE_WINDOW
 const GROUP_CHAT_TIMESTAMP_BOUNDARY_OVERFLOW = 100
 const GROUP_CHAT_SUMMARY_SCAN_LIMIT = 10_000
-const GROUP_CHAT_TOKEN_ACCOUNTING_VERSION = 1
+// 2: array tool_calls are counted by their JSON size instead of "[object Object]".
+const GROUP_CHAT_TOKEN_ACCOUNTING_VERSION = 2
 
 function storedGroupAgentRunIdentity(row: any): {
     ownerId: string
