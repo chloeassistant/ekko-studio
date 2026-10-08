@@ -833,8 +833,9 @@ export class ChatContextCompressor {
       ...newMessages,
     ]
     const force = typeof summarizer === 'object' && summarizer.force === true
-    const overBudget = typeof summarizer === 'object' && summarizer.overBudget === true
-    const assembledOverBudget = force || overBudget || messagesTokenEstimate(assembledWithPrevious) > this.config.triggerTokens
+    const measuredOverBudget = (typeof summarizer === 'object' && summarizer.overBudget === true)
+      || messagesTokenEstimate(assembledWithPrevious) > this.config.triggerTokens
+    const assembledOverBudget = force || measuredOverBudget
     const canKeepTailWindow = newMessages.length > tailCount
 
     // If the new segment itself is too small to split but already over budget,
@@ -846,7 +847,17 @@ export class ChatContextCompressor {
     const toCompress = newMessages.slice(0, tailStart)
     const tail = newMessages.slice(tailStart)
 
-    if (toCompress.length === 0) {
+    // Over budget with nothing after the cursor: only a summary above its budget can still shrink.
+    // Otherwise the remaining overhead cannot be compressed, so report it instead of a no-op success.
+    const resummarize = toCompress.length === 0 && measuredOverBudget
+    if (resummarize && countTokens(previousSummary) <= this.config.summaryBudget) {
+      const error = new Error(
+        `Context window is too small: the context is over the compression threshold ${this.config.triggerTokens}, but nothing after the last compression point can be folded and the summary is already within its budget. Increase model context length, raise compression.threshold, shorten the input, or disable some tools.`,
+      )
+      error.name = 'ContextWindowTooSmallError'
+      throw error
+    }
+    if (toCompress.length === 0 && !resummarize) {
       return {
         messages: assembledWithPrevious,
         meta: {
@@ -878,7 +889,7 @@ export class ChatContextCompressor {
       summary = await callSummarizer(upstream, apiKey, prompt, [], this.config.summarizationTimeoutMs, previousSummary, summarizer)
       logger.info('[context-compressor] incremental-llm done in %dms, %d chars', Date.now() - t0, summary.length)
     } catch (err: any) {
-      if (force) throw err
+      if (force || resummarize) throw err
       logger.warn('[context-compressor] incremental-llm failed: %s — keeping new messages verbatim', err.message)
       const fallback = [
         ...head,
@@ -913,6 +924,7 @@ export class ChatContextCompressor {
 
     const newLastIndex = lastMessageIndex + tailStart
     const compressedThroughCursor = toCompress.at(-1)?.cursorId
+      ?? (cursorSnapshot ? snapshot.compressedThroughMessageId! : undefined)
     const protectedHeadThroughCursor = cursorSnapshot
       ? snapshot.protectedHeadThroughMessageId ?? null
       : head.at(-1)?.cursorId ?? null

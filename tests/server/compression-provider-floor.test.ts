@@ -77,20 +77,64 @@ describe('compression decisions with the provider usage floor', () => {
     expect(summarizerRun).toHaveBeenCalledTimes(1)
   })
 
-  it('ignores provider usage recorded before the history was cleared', async () => {
+  it('ignores provider usage recorded before a history clear in the same second', async () => {
     const { addMessage, clearSessionMessages, createSession } = await import('../../packages/server/src/modules/studio/repositories/session-store')
     const { updateUsage } = await import('../../packages/server/src/modules/studio/repositories/usage-store')
-    createSession({ id: 's2', source: 'cli' })
-    for (let index = 0; index < 6; index++) {
-      addMessage({ session_id: 's2', role: index % 2 ? 'assistant' : 'user', content: `old ${index}`, timestamp: 100 + index })
-    }
-    updateUsage('s2', { source: 'hermes', inputTokens: 10_000, cacheReadTokens: 150_000, outputTokens: 10, createdAt: 106_000 })
-    clearSessionMessages('s2')
-    // A request that failed before producing usage, then a short retry.
-    addMessage({ session_id: 's2', role: 'user', content: 'failed request', timestamp: 200 })
-    addMessage({ session_id: 's2', role: 'user', content: 'retry', timestamp: 201 })
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(100_000)
+      createSession({ id: 's2', source: 'cli' })
+      for (let index = 0; index < 6; index++) {
+        addMessage({ session_id: 's2', role: index % 2 ? 'assistant' : 'user', content: `old ${index}` })
+      }
+      updateUsage('s2', { source: 'hermes', inputTokens: 10_000, cacheReadTokens: 150_000, outputTokens: 10, createdAt: 100_100 })
+      vi.setSystemTime(100_200)
+      clearSessionMessages('s2')
+      // The first new request is stored as second 100 and fails before producing usage; then a short retry.
+      vi.setSystemTime(100_300)
+      addMessage({ session_id: 's2', role: 'user', content: 'failed request' })
+      vi.setSystemTime(101_000)
+      addMessage({ session_id: 's2', role: 'user', content: 'retry' })
 
-    await expect(run('s2')).resolves.toEqual([{ role: 'user', content: 'failed request' }])
+      await expect(run('s2')).resolves.toEqual([{ role: 'user', content: 'failed request' }])
+      expect(summarizerRun).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('re-summarizes or reports too-small context when nothing follows the compression cursor', async () => {
+    const { addMessage, createSession } = await import('../../packages/server/src/modules/studio/repositories/session-store')
+    const { getCompressionSnapshot, saveCompressionSnapshot } = await import('../../packages/server/src/modules/studio/repositories/compression-snapshot')
+    const { updateUsage } = await import('../../packages/server/src/modules/studio/repositories/usage-store')
+    const { forceCompressBridgeHistory } = await import('../../packages/server/src/modules/studio/services/chat-run/compression')
+    // Only the current user turn follows the cursor, and the history builder excludes it.
+    const seed = (sessionId: string, summary: string) => {
+      createSession({ id: sessionId, source: 'cli' })
+      addMessage({ session_id: sessionId, role: 'user', content: 'old question', timestamp: 1 })
+      const cursor = addMessage({ session_id: sessionId, role: 'assistant', content: 'old answer', timestamp: 2 })!
+      addMessage({ session_id: sessionId, role: 'user', content: 'current input', timestamp: 3 })
+      expect(saveCompressionSnapshot(sessionId, summary, 1, 2, {
+        compressedThroughMessageId: cursor, protectedHeadThroughMessageId: null, expectedHistoryRevision: 0,
+      })).toBe(true)
+      db.prepare('UPDATE chat_compression_snapshots SET updated_at = 100000 WHERE session_id = ?').run(sessionId)
+      updateUsage(sessionId, { source: 'hermes', inputTokens: 10_000, cacheReadTokens: 150_000, outputTokens: 10, createdAt: 200_000 })
+      return cursor
+    }
+
+    // The summary is already within its budget: nothing can shrink, so no compression is reported as done.
+    seed('small', 'short summary')
+    await expect(run('small')).rejects.toMatchObject({ name: 'ContextWindowTooSmallError' })
+    await expect(forceCompressBridgeHistory('small', 'default', [], 160_000, { model: 'm', provider: 'p', excludeLastUser: true, overBudget: true }))
+      .rejects.toMatchObject({ name: 'ContextWindowTooSmallError' })
+    expect(getCompressionSnapshot('small')?.updatedAt).toBe(100_000)
     expect(summarizerRun).not.toHaveBeenCalled()
+
+    // A summary above its budget (20% of 256k) is re-summarized in place and the snapshot advances.
+    const largeCursor = seed('large', 'older context detail '.repeat(20_000))
+    await run('large')
+    expect(summarizerRun).toHaveBeenCalledTimes(1)
+    expect(getCompressionSnapshot('large')).toMatchObject({ summary: 'new summary', compressedThroughMessageId: largeCursor })
+    expect(getCompressionSnapshot('large')?.updatedAt).toBeGreaterThan(200_000)
   })
 })

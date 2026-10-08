@@ -1606,7 +1606,7 @@ async function applyBridgeChunkAsync(
             profile,
             ev.messages as ChatMessage[],
             tokenCount,
-            { excludeLastUser: currentInputStoredAsUser },
+            { excludeLastUser: currentInputStoredAsUser, overBudget: true },
           )
           state.bridgeCompressionResults = state.bridgeCompressionResults || {}
           state.bridgeCompressionResults[String(ev.request_id)] = compressed

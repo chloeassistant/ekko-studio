@@ -3,7 +3,7 @@
  * apply snapshot-aware compression and LLM summarization.
  */
 
-import { getSession, getSessionContextMessage } from '../../repositories/session-store'
+import { getSession } from '../../repositories/session-store'
 import { deleteCompressionSnapshot, getCompressionSnapshot } from '../../repositories/compression-snapshot'
 import { getUsage } from '../../repositories/usage-store'
 import { ChatContextCompressor, SUMMARY_PREFIX } from '../context-compressor'
@@ -271,10 +271,8 @@ export async function buildCompressedHistory(
       : 0
     // Exact prompt size the provider reported for this session's latest Hermes call since the last
     // compression. The local cl100k estimate can undercount it badly, so it is a floor for the decision.
-    // Without a snapshot, usage older than the oldest remaining message (seconds) predates a history clear.
-    const firstRowId = history[0]?.cursorId
-    const contextStartMs = snapshot?.updatedAt
-      ?? (firstRowId != null ? Number(getSessionContextMessage(sessionId, firstRowId)?.timestamp || 0) * 1000 : 0)
+    // Usage from before the last history clear (ms cutoff on the session) describes deleted history.
+    const contextStartMs = Math.max(snapshot?.updatedAt ?? 0, getSession(sessionId)?.history_cleared_at ?? 0)
     const lastUsage = getUsage(sessionId, 'hermes')
     const realPromptTokens = lastUsage && lastUsage.created_at > contextStartMs
       ? lastUsage.input_tokens + lastUsage.cache_read_tokens + lastUsage.cache_write_tokens
@@ -546,6 +544,8 @@ export async function compressHistory(
     replaceState(sessionMap, sessionId, 'compression.completed', failedMeta)
     logger.warn(err, '[chat-run-socket] compression failed for session %s, using assembled context', sessionId)
     emit('compression.completed', failedMeta)
+    // Nothing compressible remains while still over budget: callers must see the too-small error.
+    if (isContextWindowTooSmallError(err)) throw err
     return history
   }
 }
@@ -561,6 +561,8 @@ export async function forceCompressBridgeHistory(
     apiMode?: string
     excludeLastUser?: boolean
     force?: boolean
+    /** Hermes measured the context over budget and requested this compression. */
+    overBudget?: boolean
   } = {},
 ): Promise<BridgeCompressionResult> {
   const initialSnapshot = getCompressionSnapshot(sessionId)
@@ -629,8 +631,7 @@ export async function forceCompressBridgeHistory(
     workerKey: `${summarizerProfile}:compression:${sessionId}`,
     allowHermesFallback: options.allowHermesFallback !== false,
     force: options.force,
-    // Hermes or the user explicitly asked for this compression.
-    overBudget: true,
+    overBudget: options.overBudget,
   })
   const compressedMessages = result.messages.map(m => {
     const msg: any = { role: m.role, content: m.content }
