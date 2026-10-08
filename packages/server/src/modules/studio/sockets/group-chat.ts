@@ -1769,7 +1769,7 @@ class ChatStorage {
         if (role !== 'assistant' && role !== 'tool') return 0
         const reasoning = message.reasoning_content ?? message.reasoning
         return countTokens(this.contentToUsageText(message.content))
-            + countTokens(String(message.tool_calls || ''))
+            + countTokens(typeof message.tool_calls === 'string' ? message.tool_calls : message.tool_calls ? JSON.stringify(message.tool_calls) : '')
             + countTokens(String(reasoning || ''))
     }
 
