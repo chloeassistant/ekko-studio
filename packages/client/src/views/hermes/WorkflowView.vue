@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { isGlobalOnlyCodingAgent } from '@/utils/agent-catalog'
+import { agentMetadata, isGlobalOnlyCodingAgent } from '@/utils/agent-catalog'
+import { useCodingAgentModels } from '@/composables/useCodingAgentModels'
+import { nativeModelLabel } from '@/utils/native-model-families'
 import PageSidebar from "@/components/layout/PageSidebar.vue"
 import { usePageSidebarState } from "@/composables/usePageSidebar"
 import PageLoading from '@/components/common/PageLoading.vue'
@@ -120,7 +122,7 @@ import {
 } from '@/api/studio/workflow-socket'
 import { fetchSkills } from '@/api/hermes/skills'
 import { fetchSession } from '@/api/studio/sessions'
-import { inferCodingAgentApiMode, normalizeCodingAgentApiMode, type ChatCodingAgentId } from '@/api/coding-agents'
+import { inferCodingAgentApiMode, normalizeCodingAgentApiMode, type ChatCodingAgentId, type CodingAgentId } from '@/api/coding-agents'
 import { buildWorkflowSkillOptions, workflowAgentToSkillTarget } from '@/utils/hermes/workflow-skills'
 import type {
   WorkflowAgentNodeData,
@@ -469,7 +471,7 @@ const workflowRunBudgetValid = computed(() => isWorkflowRunBudgetValid(
   workflowRunBudgetCustomMinutes.value,
 ))
 
-const modelGroups = computed<AvailableModelGroup[]>(() => appStore.modelGroups)
+const modelGroups = computed<AvailableModelGroup[]>(() => appStore.modelGroups.filter(group => group.provider !== 'moa'))
 
 const defaultWorkflowProfile = computed(() =>
   profilesStore.activeProfileName || profilesStore.profiles[0]?.name || 'default',
@@ -640,6 +642,12 @@ function makeNode(
   data: Partial<WorkflowAgentNodeEditableData> & { status?: WorkflowNodeStatus } = {},
 ): WorkflowNode {
   const agent = data.agent || firstAvailableWorkflowAgent.value || 'hermes'
+  const usesGlobal = isGlobalOnlyCodingAgent(agent) || (agent !== 'hermes' && agent !== 'ekko-agent' && data.agentMode === 'global')
+  // Match server migration before clearing the provider: old Global nodes kept
+  // ignored Model-mode values, while native selections have no Studio provider.
+  const hasLegacyGlobalSelection = usesGlobal && (
+    Boolean(data.provider?.trim()) || (isGlobalOnlyCodingAgent(agent) && data.agentMode !== 'global')
+  )
   return {
     id,
     type: 'agent',
@@ -651,11 +659,11 @@ function makeNode(
       agent,
       agentMode: isGlobalOnlyCodingAgent(agent) || (data.agentMode === 'global' && ['claude-code', 'codex', 'pi', 'grok', 'opencode', 'dsh', 'cursor', 'antigravity', 'qwen', 'kimi', 'codebuddy', 'qoder', 'copilot', 'zcode'].includes(agent)) ? 'global' : 'scoped',
       priorAgentMode: data.priorAgentMode === 'global' || data.priorAgentMode === 'scoped' ? data.priorAgentMode : undefined,
-      provider: data.provider || defaultModelSelection.value.provider,
-      model: data.model || defaultModelSelection.value.model,
+      provider: usesGlobal ? '' : data.provider || defaultModelSelection.value.provider,
+      model: usesGlobal ? (hasLegacyGlobalSelection ? '' : data.model || '') : data.model || defaultModelSelection.value.model,
       apiMode: data.apiMode || defaultApiMode(data.provider || defaultModelSelection.value.provider),
       agentPreset: data.agentPreset,
-      reasoningEffort: data.reasoningEffort || 'default',
+      reasoningEffort: hasLegacyGlobalSelection ? 'default' : data.reasoningEffort || 'default',
       input: data.input || '',
       skills: data.skills || [],
       images: data.images || [],
@@ -881,6 +889,23 @@ const workflowChatPanelPendingApproval = computed(() => {
   return workflowNodeStatusFromRun(run, nodeId) === 'pending_approval'
 })
 
+const { catalog: workflowChatNativeCatalog } = useCodingAgentModels(
+  () => {
+    const id = chatStore.activeSession?.codingAgentId || chatStore.activeSession?.agent || 'codex'
+    return (agentMetadata(id)?.id || id) as CodingAgentId
+  },
+  () => workflowChatPanelVisible.value && chatStore.activeSession?.id === workflowChatPanelSessionId.value
+    && chatStore.activeSession?.codingAgentMode === 'global',
+)
+const workflowChatPanelModelLabel = computed(() => {
+  const session = chatStore.activeSession
+  if (!session || session.id !== workflowChatPanelSessionId.value) return t('models.selectModel')
+  if (session.codingAgentMode === 'global') return nativeModelLabel(workflowChatNativeCatalog.value?.models, session.model || '', t('codingAgents.nativeModelDefault'))
+  if (!session.model) return t('models.selectModel')
+  if (session.provider === 'moa') return `MoA · ${session.model}`
+  return appStore.displayModelName(session.model, session.provider)
+})
+
 const visibleWorkflowApprovalKey = computed(() => {
   const run = selectedWorkflowRun.value
   const nodeId = workflowChatPanelNodeId.value
@@ -1018,6 +1043,9 @@ function defaultApiMode(provider: string) {
 }
 
 function normalizeNodeModel(data: WorkflowAgentNodeData): Pick<WorkflowAgentNodeData, 'provider' | 'model' | 'apiMode'> {
+  if (data.agentMode === 'global' || isGlobalOnlyCodingAgent(data.agent)) {
+    return { provider: '', model: data.model, apiMode: data.apiMode }
+  }
   const availableGroups = data.agent === 'hermes'
     ? modelGroups.value
     : modelGroups.value.filter(group => canScopedCodingAgentUseProvider(
@@ -1025,7 +1053,8 @@ function normalizeNodeModel(data: WorkflowAgentNodeData): Pick<WorkflowAgentNode
         group.provider,
       ))
   const currentGroup = availableGroups.find(group => group.provider === data.provider)
-  if (currentGroup?.models.includes(data.model)) {
+  // A workflow can retain a manually entered model under a supported provider.
+  if (currentGroup && data.model) {
     return { provider: data.provider, model: data.model, apiMode: data.apiMode || defaultApiMode(data.provider) }
   }
   const fallbackGroup = availableGroups.find(group => group.models.length > 0)
@@ -2349,6 +2378,7 @@ async function applyWorkflow(
       ...node,
       data: withRuntimeNodeData({
         ...node.data,
+        ...(node.data.provider === 'moa' ? normalizeNodeModel(node.data) : {}),
         status: options.resetRuntime ? 'idle' : workflowNodeStatusFromRuntime(runtimeStatus, node.id),
         statusError: options.resetRuntime ? null : workflowNodeErrorFromRuntime(runtimeStatus, node.id),
         readonly: false,
@@ -2806,6 +2836,10 @@ function initialRunNodeStatuses(sourceNodes: WorkflowNode[], sourceEdges: Workfl
   ]))
 }
 
+const workflowModelSelections = new Map<string, Pick<WorkflowAgentNodeEditableData, 'provider' | 'model' | 'apiMode' | 'reasoningEffort'>>()
+function workflowModelSelectionKey(id: string, agent: string, mode: string) {
+  return JSON.stringify([activeWorkflowId.value, id, agent, mode])
+}
 function updateNodeData(id: string, patch: Partial<WorkflowAgentNodeEditableData>) {
   if (selectedWorkflowRunId.value) return
   nodes.value = nodes.value.map<WorkflowNode>((node) => {
@@ -2827,12 +2861,21 @@ function updateNodeData(id: string, patch: Partial<WorkflowAgentNodeEditableData
       ...(switched ? { agentMode: switched.agentMode, priorAgentMode: switched.priorAgentMode } : {}),
       skills: agentChanged ? [] : patch.skills ?? node.data.skills,
     }
+    const modeChanged = data.agentMode !== node.data.agentMode
+    if (agentChanged || modeChanged) {
+      workflowModelSelections.set(workflowModelSelectionKey(id, node.data.agent, node.data.agentMode), {
+        provider: node.data.provider, model: node.data.model, apiMode: node.data.apiMode, reasoningEffort: node.data.reasoningEffort,
+      })
+      const saved = workflowModelSelections.get(workflowModelSelectionKey(id, data.agent, data.agentMode))
+      Object.assign(data, saved || (data.agentMode === 'global'
+        ? { provider: '', model: '', reasoningEffort: 'default' }
+        : { ...normalizeNodeModel({ ...data, provider: '', model: '' }), reasoningEffort: 'default' }))
+    }
     return {
       ...node,
       style: patch.images ? expandNodeHeightForImages(node.style, patch.images.length) : node.style,
       data: withRuntimeNodeData({
         ...data,
-        ...(agentChanged ? normalizeNodeModel(data) : {}),
       }),
     }
   })
@@ -3733,7 +3776,7 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
                 </div>
               </div>
               <MessageList scroll-scope="workflow" />
-              <ChatInput />
+              <ChatInput :model-label="workflowChatPanelModelLabel" :model-disabled="true" reasoning-effort-disabled />
             </template>
             <div v-else class="workflow-chat-loading">
               {{ t('chat.noVisibleMessages') }}
@@ -4895,6 +4938,10 @@ function nodeColor(node: { data: WorkflowAgentNodeData }) {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+
+  :deep(.input-top-bar) { flex-wrap: wrap; }
+  :deep(.input-model-button) { min-width: 0; max-width: 190px; }
+  :deep(.input-model-label) { display: inline-block; }
 }
 
 .workflow-chat-header {

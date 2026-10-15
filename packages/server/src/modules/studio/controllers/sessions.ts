@@ -1,9 +1,10 @@
 import { isNativeCodingAgent } from '../contracts/agents/native-coding-agents'
 import { withRunUsage } from '../public/usage'
 import { businessEvents } from '../services/webhooks/business-events'
+import { publishSessionRemoval } from '../services/notifications/session-removal'
 import { getUsagePricing, saveUsagePricing, validateUsagePricing } from '../services/usage/usage-pricing'
-import { emptyCostCoverage, addCostCoverage } from '../services/usage/usage-cost'
-import { applyHermesCostFallbacks } from '../services/usage/hermes-cost-fallback'
+import { getAggregatedUsageStats } from '../services/usage/usage-stats'
+import { getTodayUsageWindow } from '../services/usage/usage-period'
 import { ensureBusinessConsumers } from '../services/webhooks/business-consumers'
 import { authorizeSessionShare, authorizeShareFile } from '../services/session-shares/access'
 import { sessionShareService } from '../services/session-shares/service'
@@ -17,12 +18,12 @@ import {
   getHermesSessionDetailForProfile,
   getHermesSessionDetailPaginatedForProfile,
   getExactHermesSessionDetailForProfile,
-  getHermesUsageStats,
   listHermesSessionSummaries,
   listHermesSessionSummaryGroups,
   notifyHermesSessionModelChanged,
   stopCodingAgentSessionRun,
   invalidateCodingAgentSessionRuntime,
+  validateCodingAgentModelEffort,
 } from '../public/session-agent-runtime'
 import {
   listSessions as localListSessions,
@@ -41,7 +42,7 @@ import {
   updateSessionStats as localUpdateSessionStats,
 } from '../public/sessions'
 import { buildDbExportHistory, ExportCompressor } from '../services/context-compressor/export-compressor'
-import { HIDDEN_DISPLAY_ROLE, getUnpricedHermesUsageSessions, getLocalUsageStats, getRecordedUsageSessionIds, getUsage, getUsageBatch } from '../public/sessions'
+import { HIDDEN_DISPLAY_ROLE, getUsage, getUsageBatch } from '../public/sessions'
 import {
   SESSION_CATEGORY_NAME_MAX_LENGTH,
   createSessionCategory,
@@ -53,7 +54,6 @@ import {
   renameSessionCategory,
   setSessionCategory,
 } from '../public/sessions'
-import type { UsageStatsAgentRow, UsageStatsModelRow, UsageStatsDailyRow } from '../public/sessions'
 import { deleteWorkspaceRunChangesForSession, getWorkspaceRunChangeFile as getWorkspaceRunChangeFileFromDb, listWorkspaceRunChangesForAssistantMessages, listWorkspaceRunChangesForSession } from '../public/sessions'
 import { getActiveProfileDir, getActiveProfileName, getProfileDir, listProfileNamesFromDisk, readConfigYamlForProfile } from '../public/profile-config'
 import { isNearestExistingRealPathWithin, isPathWithin, relativePathFromBase } from '../services/files/path'
@@ -1345,6 +1345,7 @@ export async function remove(ctx: any) {
     return
   }
   deleteWorkspaceRunChangesForSession(sessionId)
+  if (existing) publishSessionRemoval(existing, 'deleted')
   ctx.body = { ok: true, deleted: Boolean(existing), hermes }
 }
 
@@ -1420,6 +1421,7 @@ export async function batchRemove(ctx: any) {
       const ok = localDeleteSession(id)
       if (ok) {
         deleteWorkspaceRunChangesForSession(id)
+        publishSessionRemoval(existing!, 'deleted')
         results.deleted++
       } else {
         results.failed++
@@ -1494,6 +1496,7 @@ export async function archive(ctx: any) {
     ctx.body = { error: 'Failed to archive session' }
     return
   }
+  publishSessionRemoval(existing, 'archived')
   ctx.body = { ok: true }
 }
 
@@ -1696,7 +1699,7 @@ export async function setReasoningEffort(ctx: any) {
   }
   if (denySessionAccess(ctx, existing)) return
 
-  const body = (ctx.request.body || {}) as { reasoningEffort?: unknown; reasoning_effort?: unknown }
+  const body = (ctx.request.body || {}) as { reasoningEffort?: unknown; reasoning_effort?: unknown; model?: unknown }
   const rawEffort = body.reasoningEffort ?? body.reasoning_effort
   if (typeof rawEffort !== 'string') {
     ctx.status = 400
@@ -1710,131 +1713,63 @@ export async function setReasoningEffort(ctx: any) {
     return
   }
 
-  localUpdateSession(id, { reasoning_effort: reasoningEffort })
+  if (body.model !== undefined) {
+    if (typeof body.model !== 'string' || !body.model.trim() || existing.agent_mode !== 'global'
+      || !['cursor', 'antigravity'].includes(existing.agent)) {
+      ctx.status = 400
+      ctx.body = { error: 'Native reasoning variants require a global Cursor or Antigravity session' }
+      return
+    }
+    await validateCodingAgentModelEffort(existing.agent, existing.model, body.model.trim(), reasoningEffort)
+  }
+  const updates = { reasoning_effort: reasoningEffort,
+    ...(typeof body.model === 'string' ? { model: body.model.trim() } : {}) }
+  localUpdateSession(id, updates)
   if (existing.agent === 'grok') invalidateCodingAgentSessionRuntime(id)
-  getChatRunServer()?.emitSessionSettingsUpdated(id, {
-    reasoning_effort: reasoningEffort,
-  })
-  ctx.body = { ok: true, reasoning_effort: reasoningEffort }
+  getChatRunServer()?.emitSessionSettingsUpdated(id, updates)
+  ctx.body = { ok: true, ...updates }
 }
 
 export async function contextLength(ctx: any) {
   const profile = requestedProfile(ctx)
   const model = typeof ctx.query.model === 'string' ? ctx.query.model : undefined
   const provider = typeof ctx.query.provider === 'string' ? ctx.query.provider : undefined
-  ctx.body = { context_length: getHermesModelContextLength({ profile, model, provider }) }
+  const baseUrl = typeof ctx.query.base_url === 'string' ? ctx.query.base_url : undefined
+  ctx.body = { context_length: getHermesModelContextLength({ profile, model, provider, baseUrl }) }
 }
 
 export async function usageStats(ctx: any) {
   const rawDays = parseInt(String(ctx.query?.days ?? '30'), 10)
-  const days = Number.isFinite(rawDays) && rawDays > 0 ? Math.min(rawDays, 365) : 30
-  const profile = requestedProfile(ctx) || getActiveProfileName()
-
-  const local = getLocalUsageStats(profile, days)
-  const localSessionIds = getRecordedUsageSessionIds(profile)
-  const unpricedHermesSessions = getUnpricedHermesUsageSessions(profile, days)
-
-  let hermes = {
-    input_tokens: 0,
-    output_tokens: 0,
-    cache_read_tokens: 0,
-    cache_write_tokens: 0,
-    reasoning_tokens: 0,
-    sessions: 0,
-    by_model: [] as UsageStatsModelRow[],
-    by_agent: [] as UsageStatsAgentRow[],
-    by_day: [] as UsageStatsDailyRow[],
-    cost: 0,
-    cost_coverage: emptyCostCoverage(),
-    total_api_calls: 0,
+  const days = ctx.query?.period === 'today' ? 1 : Number.isFinite(rawDays) && rawDays > 0 ? Math.min(rawDays, 365) : 30
+  const readFilter = (value: unknown) => typeof value === 'string' ? value.trim() || undefined : undefined
+  const profile = ctx.state?.profile?.name || readFilter(ctx.query?.profile)
+  const model = readFilter(ctx.query?.model)
+  const agent = readFilter(ctx.query?.agent)
+  const account = readFilter(ctx.query?.account)
+  if (ctx.query?.account !== undefined && (typeof ctx.query.account !== 'string' || (account && account !== 'unassigned' && !/^[1-9]\d*$/.test(account)))) {
+    ctx.status = 400
+    ctx.body = { error: 'account must be a Studio user ID or unassigned.' }
+    return
   }
-
-  try {
-    const result = await getHermesUsageStats(days, undefined, profile, localSessionIds, unpricedHermesSessions.map(row => row.sessionId))
-    applyHermesCostFallbacks(local, unpricedHermesSessions, result.cost_fallbacks)
-    hermes = result
-  } catch (err) {
-    logger.warn(err, 'usageStats: failed to load Hermes usage analytics from state.db')
-  }
-
-  const modelMap = new Map<string, UsageStatsModelRow>()
-  for (const row of [...local.by_model, ...hermes.by_model]) {
-    const model = row.model.trim()
-    const current = modelMap.get(model) || {
-      model,
-      input_tokens: 0,
-      output_tokens: 0,
-      cache_read_tokens: 0,
-      cache_write_tokens: 0,
-      reasoning_tokens: 0,
-      sessions: 0,
-    }
-    current.input_tokens += row.input_tokens
-    current.output_tokens += row.output_tokens
-    current.cache_read_tokens += row.cache_read_tokens
-    current.cache_write_tokens += row.cache_write_tokens
-    current.reasoning_tokens += row.reasoning_tokens
-    current.sessions += row.sessions
-    modelMap.set(model, current)
-  }
-
-  const agentMap = new Map<string, UsageStatsAgentRow>()
-  for (const row of [...(local.by_agent || []), ...(hermes.by_agent || [])]) {
-    const agent = row.agent.trim() || 'hermes'
-    const current = agentMap.get(agent) || {
-      agent,
-      input_tokens: 0,
-      output_tokens: 0,
-      cache_read_tokens: 0,
-      cache_write_tokens: 0,
-      reasoning_tokens: 0,
-      sessions: 0,
-    }
-    current.input_tokens += row.input_tokens
-    current.output_tokens += row.output_tokens
-    current.cache_read_tokens += row.cache_read_tokens
-    current.cache_write_tokens += row.cache_write_tokens
-    current.reasoning_tokens += row.reasoning_tokens
-    current.sessions += row.sessions
-    agentMap.set(agent, current)
-  }
-
-  const dayMap = new Map<string, UsageStatsDailyRow>()
-  const now = new Date()
-  for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(now)
-    d.setDate(d.getDate() - i)
-    const key = d.toISOString().slice(0, 10)
-    dayMap.set(key, { date: key, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, sessions: 0, errors: 0, cost: 0, cost_coverage: emptyCostCoverage() })
-  }
-  for (const d of [...local.by_day, ...hermes.by_day]) {
-    const existing = dayMap.get(d.date)
-    if (existing) {
-      existing.input_tokens += d.input_tokens; existing.output_tokens += d.output_tokens
-      existing.cache_read_tokens += d.cache_read_tokens; existing.cache_write_tokens += d.cache_write_tokens
-      existing.sessions += d.sessions; existing.errors += d.errors; existing.cost += d.cost
-      addCostCoverage(existing.cost_coverage!, d.cost_coverage)
+  const selection = { model, agent, account } as import('../contracts/runs/usage').UsageStatsFilters
+  if (ctx.query?.period === 'today') {
+    const timeZone = readFilter(ctx.query?.time_zone) || Intl.DateTimeFormat().resolvedOptions().timeZone
+    try {
+      selection.today = getTodayUsageWindow(timeZone)
+    } catch {
+      ctx.status = 400
+      ctx.body = { error: 'time_zone must be a valid IANA timezone.' }
+      return
     }
   }
-
-  const costCoverage = emptyCostCoverage()
-  addCostCoverage(costCoverage, local.cost_coverage)
-  addCostCoverage(costCoverage, hermes.cost_coverage)
-  ctx.body = {
-    total_input_tokens: local.input_tokens + hermes.input_tokens,
-    total_output_tokens: local.output_tokens + hermes.output_tokens,
-    total_cache_read_tokens: local.cache_read_tokens + hermes.cache_read_tokens,
-    total_cache_write_tokens: local.cache_write_tokens + hermes.cache_write_tokens,
-    total_reasoning_tokens: local.reasoning_tokens + hermes.reasoning_tokens,
-    total_sessions: local.sessions + hermes.sessions,
-    total_cost: local.cost + hermes.cost,
-    cost_coverage: costCoverage,
-    total_api_calls: local.total_api_calls + hermes.total_api_calls,
-    period_days: days,
-    model_usage: [...modelMap.values()].sort((a, b) => (b.input_tokens + b.output_tokens) - (a.input_tokens + a.output_tokens)),
-    agent_usage: [...agentMap.values()].sort((a, b) => (b.input_tokens + b.output_tokens) - (a.input_tokens + a.output_tokens)),
-    daily_usage: [...dayMap.values()],
+  const allowed = allowedProfileSet(ctx)
+  if (profile && allowed && !allowed.has(profile)) {
+    ctx.status = 403
+    ctx.body = { error: `Profile "${profile}" is not available for this user` }
+    return
   }
+  const profiles = profile ? [profile] : listProfileNamesFromDisk().filter(name => !allowed || allowed.has(name))
+  ctx.body = await getAggregatedUsageStats(profiles, days, selection)
 }
 
 export async function usagePricing(ctx: any) {

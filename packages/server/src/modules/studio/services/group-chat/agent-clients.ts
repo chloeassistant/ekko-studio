@@ -5,7 +5,6 @@ import { findPushRunLink, linkPushRun, type PushRunRef } from '../../repositorie
 import { withTaskPlanTurnContext } from '../task-plan-runs'
 import type { TaskPlanSnapshot } from '../../contracts/task-plan'
 import { groupTaskPlanMessage } from './task-plan'
-import type { ClarifyAnswers } from './clarify-payload'
 import { groupRunUsageMessage } from './run-usage'
 import { completeRunUsage } from '../../repositories/run-usage-store'
 import { recordBridgeModelUsage } from '../usage/bridge-model-usage'
@@ -264,7 +263,7 @@ export interface GroupAgentExecutor {
     getActiveSessionId(roomId: string): string | undefined
     isActiveSession(roomId: string, sessionId: string): boolean
     respondApproval?(approvalId: string, choice: string): Promise<boolean>
-    respondClarify?(clarifyId: string, response: string, answers?: ClarifyAnswers): Promise<boolean>
+    respondClarify?(clarifyId: string, response: string): Promise<boolean>
     cancelClarify?(clarifyId: string, sessionId: string, runId: string): Promise<boolean>
     replyToMention(
         roomId: string,
@@ -1227,10 +1226,8 @@ export class AgentClient implements GroupAgentExecutor {
             const result = await this.chatRunService.runAndWait({
                 input: this.groupRuntimeInput(msg, runtimeContext),
                 session_id: sessionId,
-                ...(usesGlobalCodingAgent ? {} : {
-                    model: this.model || undefined,
-                    provider: this.provider || undefined,
-                }),
+                ...(this.model ? { model: this.model } : {}),
+                ...(usesGlobalCodingAgent ? {} : { provider: this.provider || undefined }),
                 ...(!usesGlobalCodingAgent && this.apiMode ? { apiMode: this.apiMode } : {}),
                 instructions: groupSystemPrompt,
                 group_system_prompt: groupSystemPrompt,
@@ -1243,7 +1240,7 @@ export class AgentClient implements GroupAgentExecutor {
                 mode: usesGlobalCodingAgent ? 'global' : 'scoped',
                 profile: this.profile,
                 ...(this.agentPreset ? { agent_preset: this.agentPreset } : {}),
-                ...(!usesGlobalCodingAgent && this.reasoningEffort
+                ...(this.reasoningEffort
                     ? { reasoning_effort: this.reasoningEffort }
                     : {}),
                 background_delegation_enabled: false,
@@ -1795,7 +1792,6 @@ export class AgentClient implements GroupAgentExecutor {
                     clarify_id: (ev as any).clarify_id,
                     question: (ev as any).question,
                     choices: Array.isArray((ev as any).choices) ? (ev as any).choices : null,
-                    questions: Array.isArray(ev.questions) ? ev.questions : null,
                     initial_response: (ev as any).initial_response,
                     response_mode: (ev as any).response_mode,
                     timeout_ms: (ev as any).timeout_ms,

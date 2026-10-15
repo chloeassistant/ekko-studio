@@ -82,27 +82,6 @@ function handleSidebarClick(event: MouseEvent) {
         <span>{{ t("sidebar.logs") }}</span>
       </RouteLinkItem>
       <RouteLinkItem
-        class="nav-item"
-        :to="{ name: 'hermes.usage' }"
-        :active="selectedKey === 'hermes.usage'"
-      >
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <rect x="3" y="12" width="4" height="9" rx="1" />
-          <rect x="10" y="7" width="4" height="14" rx="1" />
-          <rect x="17" y="3" width="4" height="18" rx="1" />
-        </svg>
-        <span>{{ t("sidebar.usage") }}</span>
-      </RouteLinkItem>
-      <RouteLinkItem
         v-if="isSuperAdmin"
         class="nav-item"
         :to="{ name: 'hermes.performance' }"

@@ -1,13 +1,16 @@
 <script setup lang="ts">
+import { modelReasoningEfforts } from '@/utils/model-reasoning-effort'
+import NativeCodingAgentModelFields from '@/components/hermes/models/NativeCodingAgentModelFields.vue'
+import ScopedModelSelector from '@/components/hermes/models/ScopedModelSelector.vue'
+import type { CodingAgentId } from '@/api/coding-agents'
 import { isNativeCodingAgent, isGlobalOnlyCodingAgent } from '@/utils/agent-catalog'
 import PageSidebar from "@/components/layout/PageSidebar.vue"
 import { usePageSidebarState } from "@/composables/usePageSidebar"
-import { usePageLoadingState } from '@/composables/usePageLoading'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import HeaderSidebarToggle from '@/components/layout/HeaderSidebarToggle.vue'
 import { GROUP_AGENT_OPTIONS } from "@/utils/agent-options"
 import DshSessionPresetSelect from "@/components/coding-agents/dsh/DshSessionPresetSelect.vue"
-import { reactive, ref, computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, provide, watch } from 'vue'
+import { ref, computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, provide, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { NSpin, useMessage, NInput, NButton, NSpace, NSelect, NPopconfirm, NInputNumber, NDropdown, NModal, NPopover, NDrawer, NDrawerContent, NSwitch, type DropdownOption } from 'naive-ui'
@@ -47,7 +50,6 @@ import ProfileAvatar from '@/components/hermes/profiles/ProfileAvatar.vue'
 import PageSidebarNav from '@/components/layout/PageSidebarNav.vue'
 import PageSidebarFooter from "@/components/layout/PageSidebarFooter.vue";
 import { copyToClipboard } from '@/utils/clipboard'
-import { buildClarifySubmission, type ClarifyAnswers, type ClarifyDraft, type ClarifyQuestion } from '@/utils/clarify-questions'
 import type { Attachment } from '@/stores/hermes/chat'
 import type {
     GroupAgentPreset,
@@ -126,8 +128,6 @@ watch(
 const showCreateModal = ref(false)
 const showCloneModal = ref(false)
 const showAddAgentDrawer = ref(false)
-const showGroupChatRefactorNotice = ref(false)
-const pageLoading = usePageLoadingState()
 const showManualRoomLinkModal = ref(false)
 const manualRoomLink = ref('')
 const manualRoomLinkInput = ref<HTMLInputElement | null>(null)
@@ -176,7 +176,7 @@ const remoteRoomConnections = ref<LocalGroupAgentConnection[]>([])
 const localRoomsCollapsed = ref(false)
 const remoteRoomsCollapsed = ref(false)
 const isDecidingAgentPairing = ref(false)
-const clarifyDrafts = reactive<Record<string, ClarifyDraft>>({})
+const clarifyResponse = ref('')
 const allowGuestAgentsDraft = ref(false)
 const maxGuestAgentsPerMemberDraft = ref(1)
 const allowRemoteWorkspaceAccessDraft = ref(false)
@@ -238,7 +238,6 @@ const toolPanelTransitionReady = ref(false)
 const activeWorkspacePanel = ref<'files' | 'terminal' | 'browser'>('files')
 const desktopBrowserAvailable = hasDesktopBrowserBridge()
 const workspacePanelMobile = ref(window.innerWidth <= 768)
-const GROUP_CHAT_REFACTOR_NOTICE_STORAGE_KEY = 'hermes.groupChat.refactorNotice.v1.acknowledged'
 const WORKSPACE_PANEL_MIN_WIDTH = 360
 const WORKSPACE_PANEL_DEFAULT_WIDTH = 560
 const WORKSPACE_PANEL_STORAGE_KEY = 'hermes.groupChat.workspacePanelWidth'
@@ -265,9 +264,19 @@ const firstAvailableGroupAgentType = computed<GroupAgentType | null>(() =>
 )
 const supportsGlobalAgentMode = computed(() => ['claude', 'codex', 'pi', 'grok', 'opencode', 'dsh', 'cursor', 'antigravity', 'qwen', 'kimi', 'codebuddy', 'qoder', 'copilot', 'zcode'].includes(selectedAgentType.value))
 const usesGlobalAgentMode = computed(() => supportsGlobalAgentMode.value && selectedAgentMode.value === 'global')
+const nativeAgentSelections = ref<Record<string, { model: string; reasoningEffort: string }>>({})
+const nativeAgentId = computed(() => (selectedAgentType.value === 'claude' ? 'claude-code' : selectedAgentType.value) as CodingAgentId)
+const nativeAgentSelection = computed(() => nativeAgentSelections.value[selectedAgentType.value] || { model: '', reasoningEffort: '' })
+function updateNativeAgentSelection(selection: { model: string; reasoningEffort: string }) {
+    nativeAgentSelections.value[selectedAgentType.value] = selection
+}
+function handleNativeAgentSelection(selection: { model: string; reasoningEffort: string }) {
+    selectedAgentPresetId.value = null
+    updateNativeAgentSelection(selection)
+}
 const agentModeOptions = computed(() => [
-    { label: t('codingAgents.launchModeGlobal'), value: 'global' },
-    { label: t('codingAgents.launchModeScoped'), value: 'scoped' },
+    { label: t('codingAgents.modelScope'), value: 'scoped' },
+    { label: t('codingAgents.launchModeGlobalShort'), value: 'global' },
 ])
 
 function groupAgentDisplayName(agent: GroupAgentType): string {
@@ -336,21 +345,7 @@ function getDefaultAgentModel(profile: string) {
     }
 }
 
-const agentProviderOptions = computed(() =>
-    getAgentModelGroups(selectedProfile.value || '').map(group => ({
-        label: group.label || group.provider,
-        value: group.provider,
-    }))
-)
-
-const agentModelOptions = computed(() => {
-    const group = getAgentModelGroups(selectedProfile.value || '')
-        .find(item => item.provider === selectedAgentProvider.value)
-    return (group?.models || []).map(modelId => ({
-        label: appStore.displayModelName(modelId, group?.provider),
-        value: modelId,
-    }))
-})
+const agentModelGroups = computed(() => getAgentModelGroups(selectedProfile.value || ''))
 
 const selectedAgentProviderGroup = computed(() =>
     getAgentModelGroups(selectedProfile.value || '')
@@ -383,15 +378,18 @@ const pendingAgentPreset = computed(() =>
 
 const agentReasoningEffortOptions = computed(() => [
     { label: t('chat.reasoningEffort.options.default'), value: '' },
-    { label: t('chat.reasoningEffort.options.none'), value: 'none' },
-    { label: t('chat.reasoningEffort.options.minimal'), value: 'minimal' },
-    { label: t('chat.reasoningEffort.options.low'), value: 'low' },
-    { label: t('chat.reasoningEffort.options.medium'), value: 'medium' },
-    { label: t('chat.reasoningEffort.options.high'), value: 'high' },
-    { label: t('chat.reasoningEffort.options.xhigh'), value: 'xhigh' },
-    { label: t('chat.reasoningEffort.options.max'), value: 'max' },
+    ...modelReasoningEfforts(
+      getAgentModelGroups(selectedProfile.value || ''),
+      selectedAgentProvider.value,
+      selectedAgentModel.value,
+    ).map(value => ({ label: t(`chat.reasoningEffort.options.${value}`), value })),
 ])
 
+watch([agentReasoningEffortOptions, selectedAgentReasoningEffort], ([options, effort]) => {
+  if (!usesGlobalAgentMode.value && effort && !options.some(option => option.value === effort)) {
+    selectedAgentReasoningEffort.value = ''
+  }
+})
 const summaryModelGroups = computed(() =>
     (appStore.profileModelGroups.find(entry => entry.profile === summaryConfig.value.summaryProfile)?.groups || [])
         .filter(group => group.provider !== 'moa' && canScopedCodingAgentUseProvider('ekko-agent', group.provider))
@@ -558,18 +556,15 @@ function handleAgentTypeChange(agent: GroupAgentType) {
 function handleAgentModeChange(mode: 'scoped' | 'global') {
     selectedAgentMode.value = mode
     selectedAgentPresetId.value = null
+    if (mode === 'scoped' && !selectedAgentProvider.value && selectedProfile.value) syncAgentModelSelection(selectedProfile.value)
 }
 
-function handleAgentProviderChange(provider: string) {
-    selectedAgentProvider.value = provider
-    selectedAgentModel.value = agentModelOptions.value[0]?.value || ''
+function handleAgentModelSelect(selection: { provider: string; model: string }) {
+    selectedAgentProvider.value = selection.provider
+    selectedAgentModel.value = selection.model
     selectedAgentReasoningEffort.value = ''
+    selectedAgentPresetId.value = null
     syncAgentApiMode()
-}
-
-function handleAgentModelChange(model: string) {
-    selectedAgentModel.value = model
-    selectedAgentReasoningEffort.value = ''
 }
 
 function agentAvatarName(agent: RoomAgent): string {
@@ -695,20 +690,9 @@ const visibleClarify = computed(() =>
         ? store.activePendingClarify
         : null,
 )
-const clarifyQuestions = computed<ClarifyQuestion[]>(() => visibleClarify.value?.questions || [])
-/** One question without multi-select keeps the original card: the choices answer on click. */
-const clarifySingleQuestion = computed(() => clarifyQuestions.value.length === 1 && !clarifyQuestions.value[0].multiSelect)
-const clarifyCanSubmit = computed(() => visibleClarify.value?.responseMode === 'editor'
-    || Boolean(buildClarifySubmission(clarifyQuestions.value, clarifyDrafts).response))
 watch(
     () => visibleClarify.value?.clarifyId,
-    () => {
-        for (const qid of Object.keys(clarifyDrafts)) delete clarifyDrafts[qid]
-        for (const question of clarifyQuestions.value) clarifyDrafts[question.qid] = { choices: [], text: '' }
-        const first = clarifyQuestions.value[0]
-        if (first) clarifyDrafts[first.qid].text = visibleClarify.value?.initialResponse || ''
-    },
-    { immediate: true },
+    () => { clarifyResponse.value = visibleClarify.value?.initialResponse || '' },
 )
 const visibleAgentPairing = computed(() =>
     currentRoomCanManage.value ? pendingAgentPairings.value[0] || null : null,
@@ -966,16 +950,6 @@ function handleGroupAttachmentPreviewRequest(event: Event): void {
     }).catch(error => {
         message.error(error instanceof Error ? error.message : t('files.previewFailed'))
     })
-}
-
-
-function acknowledgeGroupChatRefactorNotice() {
-    try {
-        window.localStorage.setItem(GROUP_CHAT_REFACTOR_NOTICE_STORAGE_KEY, '1')
-    } catch {
-        // The notice can still be dismissed when persistent browser storage is unavailable.
-    }
-    showGroupChatRefactorNotice.value = false
 }
 
 const remoteRooms = computed(() => buildRemoteGroupChatRooms(
@@ -1339,6 +1313,7 @@ async function handleSummaryConfigurationRequired() {
 }
 
 function resetAgentForm() {
+    nativeAgentSelections.value = {}
     selectedAgentPresetId.value = null
     selectedProfile.value = null
     selectedRuntimePreset.value = undefined
@@ -1365,10 +1340,11 @@ function currentAgentPresetInput(): GroupAgentPresetInput | null {
             provider: selectedAgentProvider.value,
             model: selectedAgentModel.value,
             usesGlobal: usesGlobalAgentMode.value,
+            nativeModel: nativeAgentSelection.value.model,
         }),
         profile: selectedProfile.value,
         apiMode: selectedAgentType.value === 'hermes' || usesGlobalAgentMode.value ? '' : selectedAgentApiMode.value,
-        reasoningEffort: usesGlobalAgentMode.value ? '' : selectedAgentReasoningEffort.value,
+        reasoningEffort: usesGlobalAgentMode.value ? nativeAgentSelection.value.reasoningEffort : selectedAgentReasoningEffort.value,
         agentPreset: selectedAgentType.value === 'dsh' ? selectedRuntimePreset.value : undefined,
         name: agentName.value.trim() || selectedProfile.value,
         description: agentDescription.value.trim(),
@@ -1444,7 +1420,8 @@ function applyAgentPreset(presetId: string | null) {
         input.apiMode,
         inferCodingAgentApiMode(input.provider),
     )
-    selectedAgentReasoningEffort.value = input.reasoningEffort || ''
+    selectedAgentReasoningEffort.value = usesGlobalAgentMode.value ? '' : input.reasoningEffort || ''
+    if (usesGlobalAgentMode.value) updateNativeAgentSelection({ model: input.model || '', reasoningEffort: input.reasoningEffort || '' })
     selectedRuntimePreset.value = input.agentPreset
     agentName.value = input.name || ''
     agentDescription.value = input.description || ''
@@ -1603,7 +1580,8 @@ function handleEditAgent(agent: RoomAgent) {
         agent.apiMode,
         inferCodingAgentApiMode(agent.provider),
     )
-    selectedAgentReasoningEffort.value = agent.reasoningEffort || ''
+    selectedAgentReasoningEffort.value = usesGlobalAgentMode.value ? '' : agent.reasoningEffort || ''
+    if (usesGlobalAgentMode.value) updateNativeAgentSelection({ model: agent.model || '', reasoningEffort: agent.reasoningEffort || '' })
     selectedRuntimePreset.value = agent.agentPreset
     agentName.value = agent.name || ''
     agentDescription.value = agent.description || ''
@@ -1614,13 +1592,6 @@ function handleEditAgent(agent: RoomAgent) {
 
 onMounted(() => {
     if (!props.standalone) void refreshAgentAvailability()
-    if (!props.standalone) {
-        try {
-            showGroupChatRefactorNotice.value = window.localStorage.getItem(GROUP_CHAT_REFACTOR_NOTICE_STORAGE_KEY) !== '1'
-        } catch {
-            showGroupChatRefactorNotice.value = true
-        }
-    }
     window.addEventListener('hermes:preview-workspace-file', handleWorkspaceFilePreviewRequest)
     window.addEventListener('hermes:preview-group-attachment', handleGroupAttachmentPreviewRequest)
     window.addEventListener(OPEN_DESKTOP_BROWSER_PANEL_EVENT, handleOpenDesktopBrowserPanelRequest)
@@ -1753,10 +1724,11 @@ async function confirmAddAgent() {
                 provider: selectedAgentProvider.value,
                 model: selectedAgentModel.value,
                 usesGlobal: usesGlobalAgentMode.value,
+                nativeModel: nativeAgentSelection.value.model,
             }),
             profile: selectedProfile.value,
             apiMode: selectedAgentType.value === 'hermes' || usesGlobalAgentMode.value ? undefined : selectedAgentApiMode.value,
-            reasoningEffort: usesGlobalAgentMode.value ? '' : selectedAgentReasoningEffort.value,
+            reasoningEffort: usesGlobalAgentMode.value ? nativeAgentSelection.value.reasoningEffort : selectedAgentReasoningEffort.value,
             agentPreset: selectedAgentType.value === 'dsh' ? selectedRuntimePreset.value : undefined,
             name: agentName.value.trim() || undefined,
             description: agentDescription.value.trim() || undefined,
@@ -1792,10 +1764,11 @@ async function confirmUpdateAgent() {
                 provider: selectedAgentProvider.value,
                 model: selectedAgentModel.value,
                 usesGlobal: usesGlobalAgentMode.value,
+                nativeModel: nativeAgentSelection.value.model,
             }),
             profile: selectedProfile.value,
             apiMode: selectedAgentType.value === 'hermes' || usesGlobalAgentMode.value ? undefined : selectedAgentApiMode.value,
-            reasoningEffort: usesGlobalAgentMode.value ? '' : selectedAgentReasoningEffort.value,
+            reasoningEffort: usesGlobalAgentMode.value ? nativeAgentSelection.value.reasoningEffort : selectedAgentReasoningEffort.value,
             agentPreset: selectedAgentType.value === 'dsh' ? selectedRuntimePreset.value : undefined,
             name: agentName.value.trim() || undefined,
             description: agentDescription.value.trim() || undefined,
@@ -2117,43 +2090,20 @@ async function handleApproval(choice: 'once' | 'session' | 'always' | 'deny') {
     }
 }
 
-async function submitClarify(response: string, answers: ClarifyAnswers) {
+async function handleClarify(response?: string) {
     if (!currentRoomCanManage.value) return
+    const finalResponse = response !== undefined
+        ? response
+        : visibleClarify.value?.responseMode === 'editor'
+            ? clarifyResponse.value
+            : clarifyResponse.value.trim()
+    if (response === undefined && !finalResponse && visibleClarify.value?.responseMode !== 'editor') return
     try {
-        await store.respondClarify(response, answers)
-        for (const draft of Object.values(clarifyDrafts)) {
-            draft.choices = []
-            draft.text = ''
-        }
+        await store.respondClarify(finalResponse)
+        clarifyResponse.value = ''
     } catch (err: any) {
         message.error(err.message || t('common.saveFailed'))
     }
-}
-
-function toggleClarifyChoice(question: ClarifyQuestion, choice: string) {
-    const draft = clarifyDrafts[question.qid] || (clarifyDrafts[question.qid] = { choices: [], text: '' })
-    if (!question.multiSelect) {
-        draft.choices = draft.choices.includes(choice) ? [] : [choice]
-        return
-    }
-    draft.choices = draft.choices.includes(choice)
-        ? draft.choices.filter(item => item !== choice)
-        : [...draft.choices, choice]
-}
-
-/** The single-question card answers straight from the clicked choice. */
-function handleClarifyChoice(choice: string) {
-    void submitClarify(choice, { [clarifyQuestions.value[0]?.qid || 'q0']: choice })
-}
-
-function handleClarifyDismiss() {
-    void submitClarify('', {})
-}
-
-function handleClarify() {
-    const { response, answers } = buildClarifySubmission(clarifyQuestions.value, clarifyDrafts)
-    if (!response && visibleClarify.value?.responseMode !== 'editor') return
-    void submitClarify(response, answers)
 }
 
 function handleClarifyKeydown(event: KeyboardEvent) {
@@ -2618,33 +2568,18 @@ function handleClarifyKeydown(event: KeyboardEvent) {
                                 <div class="approval-float-title">
                                     <span v-if="visibleClarify.agentName">@{{ visibleClarify.agentName }} · </span>{{ t('chat.clarifyTitle') }}
                                 </div>
-                                <div class="clarify-float-questions">
-                                    <div v-for="question in clarifyQuestions" :key="question.qid" class="clarify-float-question">
-                                        <div class="approval-float-desc">{{ question.question }}</div>
-                                        <div v-if="question.choices?.length" class="approval-float-actions">
-                                            <NButton
-                                                v-for="choice in question.choices"
-                                                :key="choice"
-                                                size="small"
-                                                :type="clarifySingleQuestion || clarifyDrafts[question.qid]?.choices.includes(choice) ? 'primary' : 'default'"
-                                                :secondary="!clarifySingleQuestion && !clarifyDrafts[question.qid]?.choices.includes(choice)"
-                                                @click="clarifySingleQuestion ? handleClarifyChoice(choice) : toggleClarifyChoice(question, choice)"
-                                            >
-                                                {{ choice }}
-                                            </NButton>
-                                            <NButton v-if="clarifySingleQuestion" size="small" type="error" secondary @click="handleClarifyDismiss()">
-                                                {{ t('chat.clarifyDismiss') }}
-                                            </NButton>
-                                        </div>
-                                        <NInput v-if="!clarifySingleQuestion && clarifyDrafts[question.qid]" v-model:value="clarifyDrafts[question.qid].text" size="small" :type="visibleClarify.responseMode === 'editor' ? 'textarea' : 'text'" :placeholder="t('chat.clarifyPlaceholder')" />
-                                    </div>
-                                </div>
-                                <div class="clarify-float-input-row">
-                                    <NInput v-if="clarifySingleQuestion && clarifyDrafts[clarifyQuestions[0].qid]" v-model:value="clarifyDrafts[clarifyQuestions[0].qid].text" size="small" :type="visibleClarify.responseMode === 'editor' ? 'textarea' : 'text'" :placeholder="t('chat.clarifyPlaceholder')" @keydown.enter="handleClarifyKeydown" />
-                                    <NButton v-else size="small" type="error" secondary class="clarify-float-dismiss" @click="handleClarifyDismiss()">
+                                <div class="approval-float-desc">{{ visibleClarify.question }}</div>
+                                <div v-if="visibleClarify.choices?.length" class="approval-float-actions">
+                                    <NButton v-for="choice in visibleClarify.choices" :key="choice" size="small" type="primary" @click="handleClarify(choice)">
+                                        {{ choice }}
+                                    </NButton>
+                                    <NButton size="small" type="error" secondary @click="handleClarify('')">
                                         {{ t('chat.clarifyDismiss') }}
                                     </NButton>
-                                    <NButton size="small" type="primary" :disabled="!clarifyCanSubmit" @click="handleClarify()">
+                                </div>
+                                <div class="clarify-float-input-row">
+                                    <NInput v-model:value="clarifyResponse" size="small" :type="visibleClarify.responseMode === 'editor' ? 'textarea' : 'text'" :placeholder="t('chat.clarifyPlaceholder')" @keydown.enter="handleClarifyKeydown" />
+                                    <NButton size="small" type="primary" :disabled="visibleClarify.responseMode !== 'editor' && !clarifyResponse.trim()" @click="handleClarify()">
                                         {{ t('chat.clarifySubmit') }}
                                     </NButton>
                                 </div>
@@ -2869,7 +2804,8 @@ function handleClarifyKeydown(event: KeyboardEvent) {
                 :closable="!isSavingAgent"
             >
                     <div v-if="isLoadingAgentForm" class="agent-form-loading" role="status">
-                        <NSpin size="small" :description="t('common.loading')" />
+                        <NSpin size="small" />
+                        <span>{{ t('common.loading') }}</span>
                     </div>
                     <div v-if="!editingAgent" class="agent-preset-entry">
                         <NButton secondary block @click="openAgentPresetSelection">
@@ -2937,7 +2873,7 @@ function handleClarifyKeydown(event: KeyboardEvent) {
                     <DshSessionPresetSelect v-if="selectedAgentType === 'dsh'" class="form-group"
                         v-model="selectedRuntimePreset" :disabled="isSavingAgent || isLoadingAgentForm"
                         @valid="selectedRuntimePresetReady = $event" />
-                    <div v-if="supportsGlobalAgentMode && selectedAgentType !== 'cursor'" class="form-group">
+                    <div v-if="supportsGlobalAgentMode && !isGlobalOnlyCodingAgent(selectedAgentType)" class="form-group">
                         <label class="form-label">{{ t('codingAgents.launchModeScope') }}</label>
                         <NSelect
                             :value="selectedAgentMode"
@@ -2946,29 +2882,18 @@ function handleClarifyKeydown(event: KeyboardEvent) {
                             @update:value="handleAgentModeChange"
                         />
                     </div>
-                    <div v-if="!usesGlobalAgentMode" class="form-group">
-                        <label class="form-label">{{ t('models.provider') }}</label>
-                        <NSelect
-                            :value="selectedAgentProvider"
-                            :options="agentProviderOptions"
-                            :placeholder="t('models.selectProvider')"
-                            :loading="isLoadingAgentForm"
-                            :disabled="isLoadingAgentForm"
-                            filterable
-                            @update:value="handleAgentProviderChange"
-                        />
+                    <div v-if="usesGlobalAgentMode" class="form-group">
+                        <label class="form-label">{{ t('models.models') }}</label>
+                        <NativeCodingAgentModelFields :key="nativeAgentId" :agent="nativeAgentId"
+                            :model="nativeAgentSelection.model" :reasoning-effort="nativeAgentSelection.reasoningEffort"
+                            :disabled="isLoadingAgentForm || isSavingAgent" @change="handleNativeAgentSelection" />
                     </div>
                     <div v-if="!usesGlobalAgentMode" class="form-group">
                         <label class="form-label">{{ t('models.models') }}</label>
-                        <NSelect
-                            :value="selectedAgentModel"
-                            :options="agentModelOptions"
-                            :placeholder="t('models.selectModel')"
-                            :loading="isLoadingAgentForm"
-                            :disabled="isLoadingAgentForm || !selectedAgentProvider"
-                            filterable
-                            @update:value="handleAgentModelChange"
-                        />
+                        <ScopedModelSelector :provider="selectedAgentProvider" :model="selectedAgentModel"
+                            :groups="agentModelGroups" :allow-moa="selectedAgentType === 'hermes'"
+                            :disabled="isLoadingAgentForm || isSavingAgent"
+                            @select="handleAgentModelSelect" />
                     </div>
                     <div v-if="selectedAgentType !== 'hermes' && !usesGlobalAgentMode" class="form-group">
                         <label class="form-label">{{ t('codingAgents.protocolScope') }}</label>
@@ -2978,11 +2903,16 @@ function handleClarifyKeydown(event: KeyboardEvent) {
                             :disabled="isLoadingAgentForm"
                         />
                     </div>
-                    <div v-if="!usesGlobalAgentMode" class="form-group">
+                    <div class="form-group">
                         <label class="form-label">{{ t('chat.reasoningEffort.tooltip') }}</label>
+                        <NativeCodingAgentModelFields v-if="usesGlobalAgentMode" :key="nativeAgentId" :agent="nativeAgentId"
+                            field="reasoning-effort" :model="nativeAgentSelection.model" :reasoning-effort="nativeAgentSelection.reasoningEffort"
+                            :disabled="isLoadingAgentForm || isSavingAgent" @change="handleNativeAgentSelection" />
                         <NSelect
+                            v-else
                             v-model:value="selectedAgentReasoningEffort"
                             :options="agentReasoningEffortOptions"
+                            :aria-label="t('chat.reasoningEffort.tooltip')"
                             :placeholder="t('chat.reasoningEffort.tooltip')"
                             :disabled="isLoadingAgentForm"
                         />
@@ -3247,25 +3177,6 @@ function handleClarifyKeydown(event: KeyboardEvent) {
                 <template #action>
                     <NButton type="primary" @click="showManualRoomLinkModal = false">
                         {{ t('common.ok') }}
-                    </NButton>
-                </template>
-            </NModal>
-            <NModal
-                v-model:show="showGroupChatRefactorNotice"
-                v-if="!pageLoading"
-                preset="dialog"
-                :title="t('groupChat.refactorNoticeTitle')"
-                :mask-closable="false"
-                :close-on-esc="false"
-                :closable="false"
-                style="width: 480px; max-width: 92vw"
-            >
-                <p class="group-chat-refactor-notice">
-                    {{ t('groupChat.refactorNoticeMessage') }}
-                </p>
-                <template #action>
-                    <NButton type="primary" @click="acknowledgeGroupChatRefactorNotice">
-                        {{ t('common.confirm') }}
                     </NButton>
                 </template>
             </NModal>
@@ -3641,11 +3552,6 @@ export default defineComponent({ components: { CreateRoomForm } })
     display: flex;
 }
 
-.group-chat-refactor-notice {
-    margin: 0;
-    line-height: 1.7;
-}
-
 @media (max-width: $breakpoint-mobile) {
     .sidebar-backdrop {
         display: block;
@@ -3761,19 +3667,6 @@ export default defineComponent({ components: { CreateRoomForm } })
     margin-top: 10px;
     padding: 10px 4px 0;
     border-top: 1px solid $border-color;
-}
-
-.clarify-float-questions {
-    max-height: 240px;
-    overflow-y: auto;
-}
-
-.clarify-float-question + .clarify-float-question {
-    margin-top: 12px;
-}
-
-.clarify-float-dismiss {
-    justify-self: start;
 }
 
 @media (max-width: 640px) {
@@ -4869,7 +4762,19 @@ export default defineComponent({ components: { CreateRoomForm } })
     }
 }
 
-.agent-form-loading,
+.agent-form-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 12px;
+    margin-bottom: 18px;
+    border-radius: $radius-md;
+    background: rgba(var(--text-primary-rgb), 0.03);
+    color: $text-secondary;
+    font-size: 13px;
+}
+
 .agent-preset-entry {
     margin-bottom: 18px;
 }

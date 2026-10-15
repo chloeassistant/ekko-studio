@@ -52,7 +52,6 @@ import {
 import { buildOutboundToolMessage } from '../services/chat-run/resume-payload'
 import { defaultGroupChatWorkspace } from '../services/group-chat/workspace-files'
 import { GroupStreamSnapshots } from '../services/group-chat/stream-snapshots'
-import { sanitizeClarifyAnswers, sanitizeClarifyQuestions, type ClarifyQuestionPayload } from '../services/group-chat/clarify-payload'
 
 export { defaultGroupChatWorkspace } from '../services/group-chat/workspace-files'
 
@@ -132,7 +131,6 @@ interface PendingGroupClarifyRoute {
     clarifyId: string
     question: string
     choices: string[] | null
-    questions: ClarifyQuestionPayload[] | null
     initialResponse: string
     responseMode: string
     timeoutMs: number
@@ -3383,7 +3381,6 @@ export class GroupChatServer {
                 clarify_id: route.clarifyId,
                 question: route.question,
                 choices: route.choices,
-                questions: route.questions,
                 initial_response: route.initialResponse,
                 response_mode: route.responseMode,
                 timeout_ms: route.timeoutMs,
@@ -5623,7 +5620,7 @@ export class GroupChatServer {
         }
     }
 
-    private handleClarifyRequested(socket: Socket, data: { roomId?: string; agentName?: string; clarify_id?: string; question?: string; choices?: string[] | null; questions?: unknown; initial_response?: string; response_mode?: string; timeout_ms?: number; agentSessionId?: string; runId?: string; runtimeRunId?: string }): void {
+    private handleClarifyRequested(socket: Socket, data: { roomId?: string; agentName?: string; clarify_id?: string; question?: string; choices?: string[] | null; initial_response?: string; response_mode?: string; timeout_ms?: number; agentSessionId?: string; runId?: string; runtimeRunId?: string }): void {
         const roomId = data.roomId
         const agentName = data.agentName || ''
         if (!roomId || !data.clarify_id || !this.getCurrentAgentEventMember(socket, roomId, agentName, data.agentSessionId)) return
@@ -5639,7 +5636,6 @@ export class GroupChatServer {
             clarifyId: data.clarify_id,
             question: data.question || '',
             choices: Array.isArray(data.choices) ? data.choices.map(String) : null,
-            questions: sanitizeClarifyQuestions(data.questions),
             initialResponse: String(data.initial_response || '').slice(0, 20_000),
             responseMode: ['select', 'input', 'editor'].includes(String(data.response_mode || ''))
                 ? String(data.response_mode)
@@ -5657,7 +5653,6 @@ export class GroupChatServer {
             clarify_id: route.clarifyId,
             question: route.question,
             choices: route.choices,
-            questions: route.questions,
             initial_response: route.initialResponse,
             response_mode: route.responseMode,
             timeout_ms: route.timeoutMs,
@@ -5683,7 +5678,7 @@ export class GroupChatServer {
         })
     }
 
-    private async handleClarifyRespond(socket: Socket, data: { roomId?: string; clarify_id?: string; response?: string; answers?: unknown }, ack?: (response?: unknown) => void): Promise<void> {
+    private async handleClarifyRespond(socket: Socket, data: { roomId?: string; clarify_id?: string; response?: string }, ack?: (response?: unknown) => void): Promise<void> {
         const roomId = data.roomId
         if (!roomId || !data.clarify_id) {
             ack?.({ error: 'roomId and clarify_id are required' })
@@ -5704,13 +5699,12 @@ export class GroupChatServer {
             return
         }
         const response = typeof data.response === 'string' ? data.response : String(data.response ?? '')
-        const answers = sanitizeClarifyAnswers(data.answers)
         const remoteExecutor = this.agentClients.getAgents(roomId).find(agent =>
             agent.name === pendingRoute.agentName && typeof agent.respondClarify === 'function'
         )
         if (remoteExecutor?.respondClarify) {
             try {
-                const resolved = await remoteExecutor.respondClarify(data.clarify_id, response, answers)
+                const resolved = await remoteExecutor.respondClarify(data.clarify_id, response)
                 if (resolved) {
                     this.takePendingClarifyRoute(routeKey)
                     ack?.({ ok: true, resolved: true })
@@ -5745,7 +5739,7 @@ export class GroupChatServer {
             return
         }
         try {
-            const result = await createGroupPrimaryAgentBridge().clarifyRespond(data.clarify_id, response, answers)
+            const result = await createGroupPrimaryAgentBridge().clarifyRespond(data.clarify_id, response)
             const resolved = Boolean((result as any)?.resolved)
             if (resolved) this.takePendingClarifyRoute(routeKey)
             ack?.({ ok: true, resolved })

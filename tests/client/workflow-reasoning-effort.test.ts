@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
+import { DEFAULT_REASONING_EFFORTS, modelReasoningEfforts } from '@/utils/model-reasoning-effort'
 
 const read = (path: string) => readFileSync(path, 'utf8')
 const locales = ['de.ts', 'en.ts', 'es.ts', 'fr.ts', 'ja.ts', 'ko.ts', 'pt.ts', 'ru.ts', 'zh-TW.ts', 'zh.ts']
@@ -13,16 +14,13 @@ describe('workflow reasoning effort authoring contract', () => {
     expect(types).toMatch(/WorkflowAgentNodeEditableData[^\n]+reasoningEffort/)
     expect(node).toContain(':value="data.reasoningEffort"')
     expect(node).toContain("updateField('reasoningEffort'")
-    expect(view).toContain("reasoningEffort: data.reasoningEffort || 'default'")
+    expect(view).toContain("reasoningEffort: hasLegacyGlobalSelection ? 'default' : data.reasoningEffort || 'default'")
     expect(view).toContain('reasoningEffort: node.data.reasoningEffort')
     expect(view).toContain("reasoningEffort: typeof data.reasoningEffort === 'string'")
   })
 
   it('offers every canonical reasoning effort in every locale', () => {
-    const node = read('packages/client/src/components/hermes/workflow/WorkflowAgentNode.vue')
-    for (const effort of ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
-      expect(node).toContain(`value: '${effort}'`)
-    }
+    expect(modelReasoningEfforts([], '', '')).toEqual(DEFAULT_REASONING_EFFORTS)
     for (const locale of locales) {
       const text = read(`packages/client/src/i18n/locales/${locale}`)
       expect(text, locale).toMatch(/reasoningEffort:\s*\{/)

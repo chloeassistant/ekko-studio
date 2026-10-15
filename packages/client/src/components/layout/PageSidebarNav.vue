@@ -8,7 +8,7 @@ import { useSessionSearch } from '@/composables/useSessionSearch'
 import DesktopUpdateDownloadTab from './DesktopUpdateDownloadTab.vue'
 import { useNavigationRail } from '@/composables/useNavigationRail'
 
-type ActiveSection = 'chat' | 'history' | 'connections' | 'agents' | 'models' | 'apiRelay' | 'group' | 'global' | 'workflow'
+type ActiveSection = 'chat' | 'history' | 'connections' | 'agents' | 'models' | 'usage' | 'apiRelay' | 'group' | 'global' | 'workflow'
 
 const props = defineProps<{
   active: ActiveSection
@@ -50,6 +50,11 @@ function openAgentManager() {
 function openModels() {
   if (props.active === 'models') return
   void router.push({ name: 'hermes.models' })
+}
+
+function openUsage() {
+  if (props.active === 'usage') return
+  void router.push({ name: 'hermes.usage' })
 }
 
 function openGroupChat() {
@@ -183,6 +188,14 @@ function openApiRelay() {
           <path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" />
         </svg>
         <span>{{ t('sidebar.models') }}</span>
+      </button>
+      <button v-if="!hasNavigationRail" class="page-sidebar-tab" :class="{ active: active === 'usage' }" type="button" :aria-current="active === 'usage' ? 'page' : undefined" @click="openUsage">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="12" width="4" height="9" rx="1" />
+          <rect x="10" y="7" width="4" height="14" rx="1" />
+          <rect x="17" y="3" width="4" height="18" rx="1" />
+        </svg>
+        <span>{{ t('sidebar.usage') }}</span>
       </button>
       <button v-if="!hasNavigationRail" class="page-sidebar-tab" :class="{ active: active === 'apiRelay' }" type="button" :aria-current="active === 'apiRelay' ? 'page' : undefined" @click="openApiRelay">
         <img class="api-relay-logo" src="/relay-logo.png" width="18" height="18" alt="" aria-hidden="true" />

@@ -999,7 +999,6 @@ test('renders free-text and choice clarifications and sends responses over the c
   await expect(page.getByRole('button', { name: 'Replace', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Dismiss' })).toBeVisible()
   await page.getByRole('button', { name: 'Replace', exact: true }).click()
-  await page.getByRole('button', { name: 'Reply' }).click()
 
   await expect(page.getByText('Keep or replace the existing file?')).toHaveCount(0)
   await expect.poll(async () => page.evaluate(() => {
@@ -1012,7 +1011,6 @@ test('renders free-text and choice clarifications and sends responses over the c
         session_id: run.session_id,
         clarify_id: 'clarify-free-text',
         response: 'packages/client',
-        answers: { q0: 'packages/client' },
       },
     },
     {
@@ -1021,7 +1019,6 @@ test('renders free-text and choice clarifications and sends responses over the c
         session_id: run.session_id,
         clarify_id: 'clarify-choice',
         response: 'Replace',
-        answers: { q0: 'Replace' },
       },
     },
   ])
@@ -1102,7 +1099,6 @@ test('reports and closes timed-out approval and clarification prompts after an a
   await expect(prompt.locator('.pending-interaction-countdown')).toContainText('00:00 · Awaiting server confirmation')
   await expect(prompt.locator('.float-panel-close')).toHaveCount(0)
   await prompt.locator('.approval-float-actions button').first().click()
-  await prompt.getByRole('button', { name: 'Reply' }).click()
   await expect(prompt).toHaveCount(0)
   await page.evaluate((sid) => {
     const socket = (window as any).__PW_CHAT_SOCKET__.latest
@@ -1134,7 +1130,6 @@ test('reports and closes timed-out approval and clarification prompts after an a
         session_id: run.session_id,
         clarify_id: 'clarify-stale',
         response: 'staging',
-        answers: { q0: 'staging' },
       },
     },
   ])
@@ -1609,7 +1604,7 @@ test('restores named resumed tool traces from assistant tool calls after session
   expect(api.unexpectedRequests).toEqual([])
 })
 
-test('restores per-turn usage cards on resume and reload, including a summary-only reply', async ({ page }) => {
+for (const showCost of [true, false]) test(`restores usage history with Show Cost ${showCost ? 'enabled' : 'disabled'}`, async ({ page }) => {
   const sessionId = 'session-history-run-usage'
   await authenticate(page, TEST_ACCESS_KEY, 'research')
   await page.addInitScript((sid) => {
@@ -1632,7 +1627,7 @@ test('restores per-turn usage cards on resume and reload, including a summary-on
       ] },
     }
   }, sessionId)
-  const api = await mockHermesApi(page, { sessions: [{
+  const api = await mockHermesApi(page, { channelConfig: { display: { show_cost: showCost } }, sessions: [{
     id: sessionId, source: 'api_server', model: 'test-model', title: 'Run usage history', preview: 'First answer.',
     started_at: 1, ended_at: 4, last_active: 4, message_count: 4, tool_call_count: 0,
     input_tokens: 33475, output_tokens: 386, cache_read_tokens: 32640, cache_write_tokens: 0,
@@ -1644,6 +1639,11 @@ test('restores per-turn usage cards on resume and reload, including a summary-on
   const cards = page.locator('.run-usage-card')
   for (const reload of [false, true]) {
     if (reload) await page.reload()
+    if (!showCost) {
+      await expect(page.getByText('First answer.', { exact: true })).toBeVisible()
+      await expect(cards).toHaveCount(0)
+      continue
+    }
     await expect(cards).toHaveCount(2)
     await expect(cards.first().locator('.run-usage-value').first()).toHaveText('32')
     await expect(cards.last().locator('.run-usage-value').first()).toHaveText('354')
@@ -1717,4 +1717,39 @@ test('shows completed run usage above diff with matching colors and no disclosur
   await expect(card.last().locator('.run-usage-value').first()).toHaveText('12')
   await expect(card.last()).toContainText('Est. speed')
   await expect(card.last()).toContainText('≈ 2.4 tok/s')
+})
+
+test('keeps stored unclosed leading thinking text out of the reply after reload', async ({ page }) => {
+  const sessionId = 'unclosed-thinking-history'
+  await authenticate(page, TEST_ACCESS_KEY, 'research')
+  await page.addInitScript((sid) => {
+    ;(window as any).__PW_CHAT_SOCKET_RESUMES__ = {
+      [sid]: { session_id: sid, isWorking: false, events: [], messages: [{
+        id: 0, session_id: sid, role: 'user', content: 'Stored reasoning regression',
+        timestamp: 0, tool_call_id: null, tool_calls: null, tool_name: null,
+        token_count: null, finish_reason: null, reasoning: null,
+      }, {
+        id: 1, session_id: sid, role: 'assistant', content: '\n <thinking>synthetic reasoning only',
+        timestamp: 1, tool_call_id: null, tool_calls: null, tool_name: null,
+        token_count: null, finish_reason: 'stop', reasoning: null,
+      }] },
+    }
+  }, sessionId)
+  const api = await mockHermesApi(page, { sessions: [{
+    id: sessionId, source: 'api_server', model: 'test-model', title: 'Thinking history', preview: '',
+    started_at: 1, ended_at: 1, last_active: 1, message_count: 2, tool_call_count: 0,
+    input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0,
+    reasoning_tokens: 0, billing_provider: 'test-provider', estimated_cost_usd: 0,
+    actual_cost_usd: null, cost_status: 'none', workspace: null,
+  }] })
+  await mockChatSocket(page)
+  await page.goto('/#/hermes/chat')
+  for (const reload of [false, true]) {
+    if (reload) await page.reload()
+    await expect(page.locator('p').filter({ hasText: /^Stored reasoning regression$/ })).toBeVisible()
+    await expect(page.getByText('synthetic reasoning only', { exact: true })).toHaveCount(0)
+    await expect(page.locator('.message.assistant')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Stop' })).toHaveCount(0)
+  }
+  expect(api.unexpectedRequests).toEqual([])
 })

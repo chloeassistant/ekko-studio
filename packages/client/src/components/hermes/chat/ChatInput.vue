@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { DEFAULT_REASONING_EFFORTS, modelReasoningEfforts } from '@/utils/model-reasoning-effort'
+import type { NativeEffortChoice } from '@/utils/native-model-families'
 import { isBuiltinEkkoSession, isExternalCodingAgentSession } from '@/utils/hermes/session-agent'
 import { EKKO_SESSION_COMMAND_DEFINITIONS } from '@/utils/hermes/bridge-session-commands'
-import type { Attachment } from '@/stores/hermes/chat'
+import type { Attachment, Session } from '@/stores/hermes/chat'
 import { useChatStore } from '@/stores/hermes/chat'
 import { useAppStore } from '@/stores/hermes/app'
 import { useProfilesStore } from '@/stores/hermes/profiles'
@@ -22,6 +24,7 @@ import { clampChatInputHeight, isMobileChatInputViewport } from '@/utils/chat-in
 import { normalizeComposerVoiceTranscript, useComposerVoiceInput } from '@/composables/useComposerVoiceInput'
 import { extractRepresentativeVideoFrames, isVideoFile } from '@/utils/video-frame-extraction'
 import ImagePreviewOverlay from './ImagePreviewOverlay.vue'
+import ScreenshotButton from './ScreenshotButton.vue'
 
 const chatStore = useChatStore()
 const appStore = useAppStore()
@@ -35,66 +38,111 @@ const { toolTraceVisible, toggleToolTraceVisible } = useToolTraceVisibility()
 const props = withDefaults(defineProps<{
   modelLabel?: string
   modelDisabled?: boolean
+  modelExpanded?: boolean
   initialText?: string
   persistDraft?: boolean
+  draft?: boolean
+  draftConfig?: Pick<Session, 'profile' | 'provider' | 'model' | 'codingAgentMode'>
+  reasoningEffort?: string
+  reasoningEffortDisabled?: boolean
+  nativeReasoningEfforts?: string[]
+  nativeEffortChoices?: NativeEffortChoice[]
+  sendDisabled?: boolean
+  submit?: (text: string, attachments?: Attachment[]) => Promise<boolean>
 }>(), {
   modelLabel: '',
   modelDisabled: false,
+  modelExpanded: false,
   initialText: '',
   persistDraft: true,
+  draft: false,
+  reasoningEffort: '',
+  reasoningEffortDisabled: false,
+  sendDisabled: false,
 })
 
+const composerSession = computed(() => props.draft ? null : chatStore.activeSession)
+const submitting = ref(false)
+
 const emit = defineEmits<{
-  modelClick: []
+  modelClick: [event: MouseEvent]
   voiceClick: []
+  'update:reasoningEffort': [value: string]
 }>()
 
-const reasoningEffortOptions = computed(() => [
-  { label: t('chat.reasoningEffort.options.default'), value: '' },
-  { label: t('chat.reasoningEffort.options.none'), value: 'none' },
-  { label: t('chat.reasoningEffort.options.minimal'), value: 'minimal' },
-  { label: t('chat.reasoningEffort.options.low'), value: 'low' },
-  { label: t('chat.reasoningEffort.options.medium'), value: 'medium' },
-  { label: t('chat.reasoningEffort.options.high'), value: 'high' },
-  { label: t('chat.reasoningEffort.options.xhigh'), value: 'xhigh' },
-  { label: t('chat.reasoningEffort.options.max'), value: 'max' },
+const reasoningSession = computed(() => props.draft ? props.draftConfig : composerSession.value)
+const isMoaSession = computed(() => reasoningSession.value?.provider === 'moa')
+const isGlobalCodingAgentSession = computed(() => reasoningSession.value?.codingAgentMode === 'global')
+const isReadOnlyCodingAgentEffort = computed(() => !props.draft && isGlobalCodingAgentSession.value && isExternalCodingAgentSession(composerSession.value))
+function effortLabel(value: string) {
+  return DEFAULT_REASONING_EFFORTS.includes(value) || ['ultra', 'disabled', 'enabled'].includes(value) ? t(`chat.reasoningEffort.options.${value}`) : value
+}
+const showReasoningEffort = ref(false)
+const reasoningEffortOptions = computed(() => isGlobalCodingAgentSession.value && props.nativeEffortChoices
+  ? props.nativeEffortChoices.map(choice => ({ value: choice.effort,
+    label: choice.effort ? effortLabel(choice.effort) : t('chat.reasoningEffort.defaultLabel') })) : [
+  { label: t(isGlobalCodingAgentSession.value ? 'chat.reasoningEffort.defaultLabel' : 'chat.reasoningEffort.options.default'), value: '' },
+  ...(isGlobalCodingAgentSession.value ? props.nativeReasoningEfforts || [] : modelReasoningEfforts(
+    appStore.profileModelGroups?.find(entry => entry.profile === (reasoningSession.value?.profile || profilesStore.activeProfileName))?.groups || appStore.modelGroups || [],
+    reasoningSession.value?.provider || appStore.selectedProvider || '',
+    reasoningSession.value?.model || appStore.selectedModel || '',
+  )).map(value => ({ label: effortLabel(value), value })),
 ])
 const currentReasoningEffort = computed<string>(() =>
-  chatStore.activeSession?.reasoningEffort || ''
+  (props.draft ? props.reasoningEffort : composerSession.value?.reasoningEffort
+    || props.nativeEffortChoices?.find(choice => choice.model === composerSession.value?.model)?.effort) || ''
 )
 const reasoningEffortSliderValue = computed(() => {
   const index = reasoningEffortOptions.value.findIndex(option => option.value === currentReasoningEffort.value)
   return index >= 0 ? index : 0
 })
-const reasoningEffortAccentColors = [
-  '#94a3b8',
-  '#2ac8e9',
-  '#2bd9b4',
-  '#4ed786',
-  '#b9d93a',
-  '#f9c33c',
-  '#f77734',
-  '#ef4444',
-] as const
+const reasoningEffortAccentColors: Record<string, string> = {
+  '': '#94a3b8',
+  none: '#2ac8e9',
+  disabled: '#2ac8e9',
+  enabled: '#b9d93a',
+  minimal: '#2bd9b4',
+  low: '#4ed786',
+  medium: '#b9d93a',
+  high: '#f9c33c',
+  xhigh: '#f77734',
+  max: '#ef4444',
+  ultra: '#ef4444',
+}
 const reasoningEffortAccentStyle = computed(() => ({
-  '--reasoning-effort-accent-color': reasoningEffortAccentColors[reasoningEffortSliderValue.value]
-    || reasoningEffortAccentColors[0],
+  '--reasoning-effort-accent-color': reasoningEffortAccentColors[currentReasoningEffort.value]
+    || reasoningEffortAccentColors[''],
 }))
-const isMoaSession = computed(() => chatStore.activeSession?.provider === 'moa')
-const isGlobalCodingAgentSession = computed(() =>
-  chatStore.activeSession?.codingAgentMode === 'global'
-)
+const supportsNativeReasoning = computed(() => (props.nativeReasoningEfforts?.length || 0) > 0)
+const canEditReasoningEffort = computed(() => !props.reasoningEffortDisabled && !isReadOnlyCodingAgentEffort.value && (!isGlobalCodingAgentSession.value || (supportsNativeReasoning.value && reasoningEffortOptions.value.length > 1
+  && (!currentReasoningEffort.value || reasoningEffortOptions.value.some(option => option.value === currentReasoningEffort.value)))))
 const reasoningEffortLabel = computed<string>(() => {
   const v = currentReasoningEffort.value
   if (!v) return t('chat.reasoningEffort.defaultLabel')
   const opt = reasoningEffortOptions.value.find(o => o.value === v)
-  return opt?.label || v
+  return opt?.label || effortLabel(v)
 })
 function onReasoningEffortChange(value: string | null | undefined) {
+  if (!canEditReasoningEffort.value) return
+  if (props.draft) {
+    emit('update:reasoningEffort', value || '')
+    return
+  }
   const sid = chatStore.activeSessionId
   if (!sid) return
-  chatStore.setSessionReasoningEffort(sid, value || '')
+  const variant = props.nativeEffortChoices?.find(choice => choice.effort === (value || ''))
+  if (variant) void chatStore.setSessionReasoningEffort(sid, variant.effort, variant.model)
+  else void chatStore.setSessionReasoningEffort(sid, value || '')
 }
+watch([reasoningEffortOptions, currentReasoningEffort, canEditReasoningEffort], ([options]) => {
+  if (isMoaSession.value || !canEditReasoningEffort.value) {
+    showReasoningEffort.value = false
+    return
+  }
+  if (!isGlobalCodingAgentSession.value && currentReasoningEffort.value && !options.some(option => option.value === currentReasoningEffort.value)) {
+    onReasoningEffortChange('')
+  }
+}, { immediate: true })
 function reasoningEffortSliderLabel(value: number) {
   return reasoningEffortOptions.value[Math.round(value)]?.label || reasoningEffortLabel.value
 }
@@ -104,9 +152,9 @@ function onReasoningEffortSliderChange(value: number | [number, number]) {
   if (option) onReasoningEffortChange(option.value)
 }
 
-function handleModelButtonClick() {
+function handleModelButtonClick(event: MouseEvent) {
   if (props.modelDisabled) return
-  emit('modelClick')
+  emit('modelClick', event)
 }
 
 const compactModelLabel = computed(() => {
@@ -129,7 +177,7 @@ let sendAwaitingAttachments = false
 const isDragging = ref(false)
 const dragCounter = ref(0)
 const isComposing = ref(false)
-const activeMessageReference = computed(() => chatStore.activeMessageReference)
+const activeMessageReference = computed(() => props.draft ? null : chatStore.activeMessageReference)
 const messageReferencePreview = computed(() =>
   activeMessageReference.value?.content.replace(/\s+/g, ' ').trim() || '',
 )
@@ -230,15 +278,16 @@ let bundlesLoadedKey = ''
 let bundlesLoadRequest: Promise<void> | null = null
 let bundlesLoadRequestKey = ''
 const isBridgeSession = computed(() => {
-  const session = chatStore.activeSession
+  if (props.draft) return false
+  const session = composerSession.value
   if (!session) return chatStore.runtimeMode !== 'global_agent'
   return session.source === 'cli' && !isBuiltinEkkoSession(session)
 })
-const isEkkoSession = computed(() => isBuiltinEkkoSession(chatStore.activeSession))
-const isCodingAgentSession = computed(() => isExternalCodingAgentSession(chatStore.activeSession))
-const isCursorSession = computed(() => (chatStore.activeSession?.codingAgentId === 'cursor' || chatStore.activeSession?.codingAgentId === 'antigravity') || (chatStore.activeSession?.agent === 'cursor' || chatStore.activeSession?.agent === 'antigravity'))
+const isEkkoSession = computed(() => isBuiltinEkkoSession(composerSession.value))
+const isCodingAgentSession = computed(() => isExternalCodingAgentSession(composerSession.value))
+const isCursorSession = computed(() => (composerSession.value?.codingAgentId === 'cursor' || composerSession.value?.codingAgentId === 'antigravity') || (composerSession.value?.agent === 'cursor' || composerSession.value?.agent === 'antigravity'))
 const showSessionUsage = computed(() => isCodingAgentSession.value)
-const isForkCommandSession = computed(() => !!chatStore.activeSession && !isEkkoSession.value && !isCodingAgentSession.value)
+const isForkCommandSession = computed(() => !!composerSession.value && !isEkkoSession.value && !isCodingAgentSession.value)
 const skillPickerItems = computed(() => {
   const byName = new Map<string, SkillInfo>()
   for (const category of skillCategories.value) {
@@ -267,8 +316,8 @@ const filteredBridgeCommands = computed(() => {
       ? bridgeCommands.value.filter(command => CODING_AGENT_SLASH_COMMANDS.includes(command.name)
         && !(command.name === 'context' && isCursorSession.value)
         && !(command.name === 'compact' && (
-          chatStore.activeSession?.codingAgentId === 'opencode'
-          || chatStore.activeSession?.agent === 'opencode'
+          composerSession.value?.codingAgentId === 'opencode'
+          || composerSession.value?.agent === 'opencode'
           || isCursorSession.value
         )))
       : isForkCommandSession.value
@@ -314,7 +363,7 @@ function skillCommandName(name: string) {
 }
 
 function currentSkillsKey() {
-  return chatStore.activeSession?.profile || profilesStore.activeProfileName || 'default'
+  return composerSession.value?.profile || profilesStore.activeProfileName || 'default'
 }
 
 async function loadSkills() {
@@ -459,6 +508,7 @@ const inputSettingsOptions = computed<DropdownOption[]>(() => [
   {
     label: t('realtimeVoice.mode'),
     key: 'voiceMode',
+    disabled: props.draft,
     icon: () => h('span', {
       class: 'settings-voice-mode-icon',
       'aria-hidden': 'true',
@@ -484,7 +534,8 @@ function readDraftMap(): DraftMap {
 }
 
 function getActiveDraftSessionId() {
-  return chatStore.activeSessionId || chatStore.activeSession?.id || ''
+  if (props.draft) return ''
+  return chatStore.activeSessionId || composerSession.value?.id || ''
 }
 
 function loadDraftForActiveSession() {
@@ -522,7 +573,7 @@ onMounted(() => {
 
 function handleInputSettingsSelect(key: string | number) {
   if (key === 'voiceMode') {
-    if (chatStore.activeSessionId) emit('voiceClick')
+    if (!props.draft && chatStore.activeSessionId) emit('voiceClick')
     return
   }
 
@@ -536,7 +587,7 @@ watch(inputText, (value) => {
   if (props.persistDraft) saveDraftForActiveSession(value)
 })
 
-watch(() => chatStore.activeSession?.id, () => {
+watch(() => composerSession.value?.id, () => {
   if (props.persistDraft) loadDraftForActiveSession()
   else inputText.value = props.initialText
   nextTick(() => {
@@ -554,7 +605,7 @@ watch(() => settingsStore.display.chat_input_height, () => {
 })
 
 watch(
-  () => [chatStore.activeSession?.profile, profilesStore.activeProfileName],
+  () => [composerSession.value?.profile, profilesStore.activeProfileName],
   () => {
     skillsLoadedKey = ''
     skillCategories.value = []
@@ -564,7 +615,7 @@ watch(
 )
 
 const canSend = computed(() => inputText.value.trim().length > 0 || attachments.value.length > 0)
-const sendButtonIsStop = computed(() => chatStore.isStreaming && !canSend.value)
+const sendButtonIsStop = computed(() => !props.draft && chatStore.isStreaming && !canSend.value)
 
 function scrollCommandIntoView() {
   nextTick(() => {
@@ -736,8 +787,8 @@ async function saveContextLimit() {
 
   isSavingContextLimit.value = true
   try {
-    const provider = chatStore.activeSession?.provider || appStore.selectedProvider || ''
-    const model = chatStore.activeSession?.model || appStore.selectedModel || ''
+    const provider = composerSession.value?.provider || appStore.selectedProvider || ''
+    const model = composerSession.value?.model || appStore.selectedModel || ''
 
     if (!provider || !model) {
       message.error(t('chat.contextEditFailed'))
@@ -757,7 +808,7 @@ async function saveContextLimit() {
 }
 
 function currentContextLengthParams() {
-  const activeSession = chatStore.activeSession
+  const activeSession = composerSession.value
   return {
     profile: activeSession?.profile || profilesStore.activeProfileName || undefined,
     provider: activeSession?.provider || undefined,
@@ -771,7 +822,7 @@ function currentContextLengthKey() {
 }
 
 async function loadContextLength() {
-  if (showSessionUsage.value) return
+  if (props.draft || showSessionUsage.value) return
   const key = currentContextLengthKey()
   if (key === contextLengthLoadedKey) return
   if (key === contextLengthRequestKey && contextLengthRequest) return contextLengthRequest
@@ -804,32 +855,32 @@ watch(
     profilesStore.activeProfileName,
     appStore.selectedProvider,
     appStore.selectedModel,
-    chatStore.activeSession?.id,
-    chatStore.activeSession?.profile,
-    chatStore.activeSession?.provider,
-    chatStore.activeSession?.model,
-    chatStore.activeSession?.source,
-    chatStore.activeSession?.agent,
-    chatStore.activeSession?.codingAgentId,
+    composerSession.value?.id,
+    composerSession.value?.profile,
+    composerSession.value?.provider,
+    composerSession.value?.model,
+    composerSession.value?.source,
+    composerSession.value?.agent,
+    composerSession.value?.codingAgentId,
   ],
   loadContextLength,
   { flush: 'post' },
 )
 
 const cumulativeTokens = computed(() => {
-  const session = chatStore.activeSession
+  const session = composerSession.value
   return (session?.inputTokens ?? 0) + (session?.outputTokens ?? 0)
     + (session?.cacheReadTokens ?? 0) + (session?.cacheWriteTokens ?? 0)
 })
 const totalTokens = computed(() => {
   if (showSessionUsage.value) return cumulativeTokens.value
-  const context = chatStore.activeSession?.contextTokens
+  const context = composerSession.value?.contextTokens
   if (typeof context === 'number' && Number.isFinite(context) && context > 0) return context
-  const input = chatStore.activeSession?.inputTokens ?? 0
-  const output = chatStore.activeSession?.outputTokens ?? 0
+  const input = composerSession.value?.inputTokens ?? 0
+  const output = composerSession.value?.outputTokens ?? 0
   return input + output
 })
-const showContextUsage = computed(() => !!chatStore.activeSession)
+const showContextUsage = computed(() => !!composerSession.value)
 const showContextLimit = computed(() => !showSessionUsage.value)
 
 const remainingTokens = computed(() => Math.max(0, contextLength.value - totalTokens.value))
@@ -958,6 +1009,7 @@ defineExpose({ addFiles, focusComposer })
 // --- Send ---
 
 async function handleSend() {
+  if (props.sendDisabled || submitting.value) return
   if (isPreparingAttachments.value) {
     if (sendAwaitingAttachments) return
     sendAwaitingAttachments = true
@@ -984,7 +1036,17 @@ async function handleSend() {
     return
   }
 
-  chatStore.sendMessage(text, attachments.value.length > 0 ? attachments.value : undefined)
+  const files = attachments.value.length > 0 ? [...attachments.value] : undefined
+  if (props.submit) {
+    submitting.value = true
+    try {
+      if (!await props.submit(text, files)) return
+    } finally {
+      submitting.value = false
+    }
+  } else {
+    chatStore.sendMessage(text, files)
+  }
   inputText.value = ''
   saveDraftForActiveSession('')
   previewAttachment.value = null
@@ -1216,6 +1278,7 @@ function openAttachmentPreview(attachment: Attachment) {
       <textarea
         ref="textareaRef"
         v-model="inputText"
+        :readonly="submitting"
         class="input-textarea"
         dir="auto"
         :style="textareaHeight ? { height: textareaHeight + 'px' } : {}"
@@ -1241,60 +1304,7 @@ function openAttachmentPreview(attachment: Attachment) {
             {{ t('chat.attachFiles') }}
           </NTooltip>
 
-          <NPopover
-            v-if="!isMoaSession && !isGlobalCodingAgentSession"
-            trigger="click"
-            placement="top-start"
-          >
-            <template #trigger>
-              <NTooltip trigger="hover" :disabled="isMobileViewport">
-                <template #trigger>
-                  <NButton
-                    quaternary
-                    size="tiny"
-                    class="reasoning-effort-button"
-                    :class="{ active: !!currentReasoningEffort }"
-                    :style="reasoningEffortAccentStyle"
-                    :aria-label="`${t('chat.reasoningEffort.tooltip')}: ${reasoningEffortLabel}`"
-                  >
-                    <template #icon>
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/>
-                        <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/>
-                      </svg>
-                    </template>
-                    <span class="reasoning-effort-label">{{ reasoningEffortLabel }}</span>
-                    <svg class="toolbar-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
-                  </NButton>
-                </template>
-                {{ t('chat.reasoningEffort.tooltip') }}: {{ reasoningEffortLabel }}
-              </NTooltip>
-            </template>
-
-            <div class="reasoning-effort-slider-popover" :style="reasoningEffortAccentStyle">
-              <div class="reasoning-effort-slider-heading">
-                <span>{{ t('chat.reasoningEffort.tooltip') }}</span>
-                <strong>{{ reasoningEffortLabel }}</strong>
-              </div>
-              <NSlider
-                class="reasoning-effort-slider"
-                :class="{ 'reasoning-effort-slider--max': currentReasoningEffort === 'max' }"
-                :value="reasoningEffortSliderValue"
-                :min="0"
-                :max="reasoningEffortOptions.length - 1"
-                :step="1"
-                :format-tooltip="reasoningEffortSliderLabel"
-                @update:value="onReasoningEffortSliderChange"
-              />
-              <div class="reasoning-effort-slider-range" aria-hidden="true">
-                <span>{{ reasoningEffortOptions[0].label }}</span>
-                <span>{{ reasoningEffortOptions[reasoningEffortOptions.length - 1].label }}</span>
-              </div>
-              <div class="reasoning-effort-slider-hint">
-                {{ t('chat.reasoningEffort.dragHint', { count: reasoningEffortOptions.length }) }}
-              </div>
-            </div>
-          </NPopover>
+          <ScreenshotButton :key="chatStore.activeSessionId || 'new'" :mobile="isMobileViewport" @capture="file => addFiles([file])" />
 
           <NDropdown
             trigger="click"
@@ -1333,6 +1343,8 @@ function openAttachmentPreview(attachment: Attachment) {
                 :disabled="props.modelDisabled"
                 :title="isMobileViewport ? undefined : props.modelLabel || t('models.selectModel')"
                 :aria-label="props.modelLabel || t('models.selectModel')"
+                aria-haspopup="dialog"
+                :aria-expanded="props.modelExpanded"
                 @click="handleModelButtonClick"
               >
                 <template #icon>
@@ -1364,6 +1376,65 @@ function openAttachmentPreview(attachment: Attachment) {
             {{ props.modelLabel || t('models.selectModel') }}
           </NTooltip>
 
+          <NPopover
+            v-if="(!draft || draftConfig) && !isMoaSession && (!isGlobalCodingAgentSession || supportsNativeReasoning || currentReasoningEffort)"
+            v-model:show="showReasoningEffort"
+            trigger="click"
+            placement="top-start"
+            :disabled="!canEditReasoningEffort"
+          >
+            <template #trigger>
+              <NTooltip trigger="hover" :disabled="isMobileViewport">
+                <template #trigger>
+                  <NButton
+                    quaternary
+                    size="tiny"
+                    class="reasoning-effort-button"
+                    :disabled="submitting || (draft && modelDisabled) || !canEditReasoningEffort"
+                    :class="{ active: !!currentReasoningEffort }"
+                    :aria-label="`${t('chat.reasoningEffort.tooltip')}: ${reasoningEffortLabel}`"
+                    @keydown.esc.stop="showReasoningEffort = false"
+                  >
+                    <template #icon>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"/>
+                        <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"/>
+                      </svg>
+                    </template>
+                    <span class="reasoning-effort-label">{{ reasoningEffortLabel }}</span>
+                    <svg v-if="canEditReasoningEffort" class="toolbar-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+                  </NButton>
+                </template>
+                {{ t('chat.reasoningEffort.tooltip') }}: {{ reasoningEffortLabel }}
+              </NTooltip>
+            </template>
+
+            <div class="reasoning-effort-slider-popover" :style="reasoningEffortAccentStyle" @keydown.esc.stop="showReasoningEffort = false">
+              <div class="reasoning-effort-slider-heading">
+                <span>{{ t('chat.reasoningEffort.tooltip') }}</span>
+                <strong>{{ reasoningEffortLabel }}</strong>
+              </div>
+              <NSlider
+                class="reasoning-effort-slider"
+                :class="{ 'reasoning-effort-slider--max': currentReasoningEffort === 'max' }"
+                :value="reasoningEffortSliderValue"
+                :min="0"
+                :max="reasoningEffortOptions.length - 1"
+                :disabled="!canEditReasoningEffort || reasoningEffortOptions.length <= 1"
+                :step="1"
+                :format-tooltip="reasoningEffortSliderLabel"
+                @update:value="onReasoningEffortSliderChange"
+              />
+              <div class="reasoning-effort-slider-range" aria-hidden="true">
+                <span>{{ reasoningEffortOptions[0].label }}</span>
+                <span>{{ reasoningEffortOptions[reasoningEffortOptions.length - 1].label }}</span>
+              </div>
+              <div class="reasoning-effort-slider-hint">
+                {{ t('chat.reasoningEffort.dragHint', { count: reasoningEffortOptions.length }) }}
+              </div>
+            </div>
+          </NPopover>
+
         </div>
         <div class="input-actions">
           <VoiceDialogueControls
@@ -1381,7 +1452,7 @@ function openAttachmentPreview(attachment: Attachment) {
             circle
             class="send-button"
             :class="{ 'send-button--stop': sendButtonIsStop }"
-            :disabled="sendButtonIsStop ? chatStore.isAborting : !canSend"
+            :disabled="sendButtonIsStop ? chatStore.isAborting : !canSend || sendDisabled || submitting"
             :aria-label="sendButtonIsStop ? 'Stop' : 'Send'"
             @click="sendButtonIsStop ? chatStore.stopStreaming() : handleSend()"
           >
@@ -1713,10 +1784,6 @@ function openAttachmentPreview(attachment: Attachment) {
   border-radius: 999px;
   padding: 0 4px 0 6px;
 
-  &.active {
-    color: var(--reasoning-effort-accent-color);
-  }
-
   :deep(.n-button__content) {
     gap: 4px;
     min-width: 0;
@@ -2004,9 +2071,12 @@ function openAttachmentPreview(attachment: Attachment) {
     gap: 5px;
   }
 
-  .reasoning-effort-label,
   .auto-play-speech-switch {
     display: none;
+  }
+
+  .reasoning-effort-label {
+    max-width: 64px;
   }
 
   .reasoning-effort-slider-popover {

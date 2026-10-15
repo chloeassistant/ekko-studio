@@ -11,6 +11,102 @@ architecture from the project
 The desktop app bundles the Web UI runtime and launches it locally from the
 native shell app.
 
+## Remote server mode
+
+By default the desktop app spawns the bundled Web UI server locally. Remote
+mode points every window at an already-running deployment instead — for
+example the [Docker Compose setup](../../docs/docker.md) — and skips all local
+server and runtime bootstrap work.
+
+Enable it through one of these sources, in this order of precedence:
+
+1. `EKKO_STUDIO_DESKTOP_SERVER_URL` — one-off or automated launches:
+
+   ```sh
+   EKKO_STUDIO_DESKTOP_SERVER_URL=http://192.168.1.20:6060 npm run dev
+   ```
+
+   The older `EKKO_REMOTE_SERVER_URL` is still read after it. Environment
+   variables cannot carry request headers.
+
+2. A persisted settings file at `$HERMES_WEB_UI_HOME/desktop-remote-server.json`
+   (default `~/.hermes-web-ui/desktop-remote-server.json`), with a single server:
+
+   ```json
+   { "serverUrl": "https://studio.example.com" }
+   ```
+
+   or with several named servers (see below):
+
+   ```json
+   { "active": "home", "servers": [
+     { "name": "home", "url": "http://192.168.1.20:6060" },
+     { "name": "work", "url": "https://ekko.example.com",
+       "headers": { "CF-Access-Client-Id": "<id>", "CF-Access-Client-Secret": "<secret>" } }
+   ] }
+   ```
+
+3. The legacy `remote-servers.json` in Electron `userData` (for example
+   `~/.config/hermes-studio` on Linux), same multi-server shape. It is only
+   read when the Web UI home has no settings file.
+
+Each URL must use `http://` or `https://` without a username or password;
+query strings and hashes are dropped. On startup (and on every server switch)
+the app polls `<serverUrl>/health/ready` for up to 30 seconds (override with
+`EKKO_STUDIO_DESKTOP_REMOTE_READY_TIMEOUT_MS`) before loading the remote Web UI.
+Delete the settings file or clear `serverUrl` and relaunch to return to local
+mode; switching between local and remote mode requires an app restart.
+
+Log in with the deployment's own accounts. The desktop shared token is never
+injected into a remote page, and the tray's "Reset Login" action is hidden
+because it only manages the local server.
+
+### Several servers
+
+With a `servers` list, `active` names the server to open. Invalid entries are
+skipped with a console warning that never includes the URL or headers. If the
+file cannot be read or `active` does not name a valid entry, the app shows an
+error dialog and starts in local mode.
+
+With more than one valid server the tray menu has a **Servers** submenu.
+Choosing a server saves it as `active`, closes chat windows from the previous
+server and reloads the main and pet windows on the new one. Each server keeps
+its own browser login.
+
+### Request headers per server
+
+A server entry may carry static request headers, for example a Cloudflare Access
+service token so the app skips the Access login page.
+
+- The main process adds the headers only to requests whose origin (scheme, host and
+  port) is exactly that server's origin: the readiness probe, page loads, fetch/XHR
+  and the WebSocket upgrade. Requests to any other origin, including redirects
+  elsewhere, get none. The headers are never passed to the page, the preload script
+  or IPC, and are never logged.
+- `headers` is an object of at most 16 string values. Names must be RFC 7230 tokens;
+  values must not contain CR, LF or NUL. `Host`, `Cookie`, `Origin`, `Content-Length`,
+  `Transfer-Encoding`, `Connection` and `Upgrade` are refused. An invalid `headers`
+  object skips the whole entry.
+- The file then holds secrets. Restrict it to your user (`chmod 600`). A tray server
+  switch rewrites the file with mode 600.
+
+### Behavior differences in remote mode
+
+- Chat, coding agents, files, and workflows execute on the server; local
+  Runtime downloads and managed command shims are skipped.
+- Server-side password policies apply unchanged; the desktop patch that hides
+  the "change the default password" prompt is local-mode only.
+- Desktop integrations that act on this computer are off: the embedded browser,
+  screenshots and their global shortcut, update controls, app restart, the runtime
+  directory picker and the open-external-URL call. Links open in the system browser
+  instead. The tray hides **Check for Updates**.
+- The desktop pet window and the desktop MCP bridge stay on this computer, and
+  agents on the remote server cannot reach them. The remote page still gets
+  notifications, microphone access and chat windows, so only connect to servers
+  you control.
+- The server has no built-in TLS, so put public deployments behind an HTTPS
+  reverse proxy; login tokens are bearer credentials sent on every request.
+
 ### Release asset names
 
 Installers use `Ekko.Studio-${version}-${arch}.${ext}`. Publish the new
@@ -55,58 +151,6 @@ Hermes Agent data is stored in `~/.hermes` on Windows, macOS, and Linux.
 
 The desktop wrapper's own Web UI state is stored separately in
 `~/.hermes-web-ui` unless `HERMES_WEB_UI_HOME` is set.
-
-## Remote server mode
-
-The desktop app can open a remote Ekko Studio server instead of starting its
-bundled local server. Create `remote-servers.json` in the app's user data
-directory (Electron `userData`, for example `~/.config/hermes-studio` on Linux):
-
-```json
-{ "active": "chloe", "servers": [ { "name": "chloe", "url": "http://10.23.23.140:8648" } ] }
-```
-
-- The file is the allowlist. There is no UI for typing a URL.
-- Only `http:` and `https:` URLs without a username or password are accepted.
-  Each URL is reduced to its origin. Invalid entries are skipped with a console warning.
-- If the file cannot be read or `active` does not name a valid entry, the app shows
-  an error dialog and starts in local mode. Delete the file to return to local mode.
-- `EKKO_REMOTE_SERVER_URL=<url>` overrides the file with a single server (for testing).
-- With more than one server, the tray menu has a **Servers** submenu. Choosing a
-  server saves it as `active` and reloads the windows on that server. Chat windows
-  from the previous server are closed. Each server keeps its own browser login.
-
-In remote mode the app does not prepare the local runtime, start the local server,
-install command shims, start the embedded browser, or run the auto-updater. The tray
-hides **Check for Updates** and **Reset Login**. You sign in with the remote server's
-own login. The desktop never sends its local token to a remote page. The remote page
-cannot use the embedded browser, the updater, app restart, the runtime directory picker
-or the open-external-URL call; links open in the system browser instead. The desktop
-pet window and the desktop MCP bridge stay on this computer, and agents on the remote
-server cannot reach them. The remote page still gets notifications, microphone access
-and chat windows, so only list servers you trust.
-
-### Request headers per server
-
-A server entry may carry static request headers, for example a Cloudflare Access
-service token so the app skips the Access login page:
-
-```json
-{ "active": "chloe", "servers": [ { "name": "chloe", "url": "https://ekko-chloe.hyades.io",
-  "headers": { "CF-Access-Client-Id": "<id>", "CF-Access-Client-Secret": "<secret>" } } ] }
-```
-
-- The main process adds the headers only to requests whose origin (scheme, host and
-  port) is exactly that server's origin: page loads, fetch/XHR and the WebSocket
-  upgrade. Requests to any other origin, including redirects elsewhere, get none.
-  The headers are never passed to the page, the preload script or IPC, and are never logged.
-- `headers` is an object of at most 16 string values. Names must be RFC 7230 tokens;
-  values must not contain CR, LF or NUL. `Host`, `Cookie`, `Origin`, `Content-Length`,
-  `Transfer-Encoding`, `Connection` and `Upgrade` are refused. An invalid `headers`
-  object skips the whole entry.
-- The file then holds secrets. Restrict it to your user (`chmod 600 remote-servers.json`).
-  A tray server switch rewrites the file with mode 600.
-- `EKKO_REMOTE_SERVER_URL` cannot carry headers.
 
 ## Desktop and tray icons
 

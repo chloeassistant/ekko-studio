@@ -1,4 +1,3 @@
-import type { ClarifyAnswers } from '@/utils/clarify-questions'
 import type { TaskPlanSnapshot } from '@/utils/task-plan'
 import { io, type Socket } from 'socket.io-client'
 import { disconnectBackgroundStatusObservers } from './background-status'
@@ -752,7 +751,6 @@ export function respondClarify(
   sessionId: string,
   clarifyId: string,
   response: string,
-  answers: ClarifyAnswers | undefined,
   transport: ChatRunTransport = 'chat-run',
 ): void {
   const socket = connectChatRun(null, transport)
@@ -760,7 +758,6 @@ export function respondClarify(
     session_id: sessionId,
     clarify_id: clarifyId,
     response,
-    ...(answers ? { answers } : {}),
   })
 }
 
