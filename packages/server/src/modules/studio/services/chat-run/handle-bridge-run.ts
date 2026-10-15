@@ -1,3 +1,4 @@
+import { studioSessionAccount } from '../../contracts/runs/usage'
 import { completeRunUsage } from '../../repositories/run-usage-store'
 import { hermesStudioMcpCapabilities } from './studio-mcp'
 import { withTaskPlanTurnContext } from '../task-plan-runs'
@@ -413,6 +414,7 @@ async function ensureBridgeFixedContext(args: {
   bridge: AgentBridgeClient
   refresh?: boolean
   backgroundDelegationEnabled?: boolean
+  isCurrent?: () => boolean
 }): Promise<number | undefined> {
   const cached = bridgeContextMatches(args.state, args)
     ? getCachedBridgeContextOverhead(args.state)
@@ -434,6 +436,7 @@ async function ensureBridgeFixedContext(args: {
           : {}),
       },
     )
+    if (args.isCurrent && !args.isCurrent()) return undefined
     cacheBridgeContext(args.state, estimate, args.workspace)
     const fixedContextTokens = getCachedBridgeContextOverhead(args.state)
     bridgeLogger.info({
@@ -499,6 +502,9 @@ export async function handleBridgeRun(
   const sessionRow = getSession(session_id)
   if (sessionRow && !sessionRow.user_id && socketUser?.id != null) {
     updateSession(session_id, { user_id: String(socketUser.id) })
+  }
+  if (sessionRow && !sessionRow.studio_user_id && socketUser?.id != null) {
+    updateSession(session_id, { studio_user_id: studioSessionAccount(sessionRow) || String(socketUser.id) })
   }
   const reasoningEffort = callbackContext?.reasoningEffort ?? data.reasoning_effort ?? sessionRow?.reasoning_effort
   const requestedWorkspace = callbackContext
@@ -622,7 +628,7 @@ export async function handleBridgeRun(
     if (!getSession(session_id)) {
       const previewText = extractTextForPreview(displayInput || input)
       const preview = previewText.replace(/[\r\n]/g, ' ').substring(0, 100)
-      createSession({ id: session_id, profile, source: runSource, user_id: socketUser?.id, model: resolvedModel, provider: selectedProvider, reasoning_effort: reasoningEffort || '', title: preview, workspace, category_id: data.category_id, push_enabled: data.push_enabled })
+      createSession({ id: session_id, profile, source: runSource, user_id: socketUser?.id, studio_user_id: socketUser?.id, model: resolvedModel, provider: selectedProvider, reasoning_effort: reasoningEffort || '', title: preview, workspace, category_id: data.category_id, push_enabled: data.push_enabled })
     }
     messageId = addMessage({
       session_id,
@@ -644,7 +650,7 @@ export async function handleBridgeRun(
   } else if (!getSession(session_id)) {
     const previewText = displayInput === null ? extractTextForPreview(input) : extractTextForPreview(displayInput || input)
     const preview = previewText.replace(/[\r\n]/g, ' ').substring(0, 100)
-    createSession({ id: session_id, profile, source: runSource, user_id: socketUser?.id, model: resolvedModel, provider: selectedProvider, reasoning_effort: reasoningEffort || '', title: preview, workspace, category_id: data.category_id, push_enabled: data.push_enabled })
+    createSession({ id: session_id, profile, source: runSource, user_id: socketUser?.id, studio_user_id: socketUser?.id, model: resolvedModel, provider: selectedProvider, reasoning_effort: reasoningEffort || '', title: preview, workspace, category_id: data.category_id, push_enabled: data.push_enabled })
   }
 
   socket.join(`session:${session_id}`)
@@ -730,6 +736,7 @@ export async function handleBridgeRun(
 
   let backgroundNotificationAccepted = false
 
+  state.bridgeRunPollMarker = runMarker
   // Inside the run's failure cleanup: a pre-run error (e.g. context window too small) must settle this run.
   try {
     const history = callbackContext
@@ -831,6 +838,7 @@ export async function handleBridgeRun(
           : {}),
       },
     )
+    if (sessionMap.get(session_id) !== state || state.activeRunMarker !== runMarker) return
     state.runId = started.run_id
     if (data.background_delegation_id && data.background_claim_id) {
       await bridge.completeBackgroundNotification(
@@ -877,7 +885,10 @@ export async function handleBridgeRun(
 
     let lastChunk: AgentBridgeOutput | null = null
     let sawTerminalChunk = false
-    for await (const chunk of bridge.streamOutput(started.run_id)) {
+    for await (const chunk of bridge.streamOutput(started.run_id, {
+      shouldContinue: () => sessionMap.get(session_id) === state && state.activeRunMarker === runMarker,
+    })) {
+      if (state.activeRunMarker !== runMarker) break
       lastChunk = chunk
       await applyBridgeChunkAsync(
         nsp,
@@ -960,20 +971,14 @@ export async function handleBridgeRun(
         bridgeLogger.warn(releaseErr, '[chat-run-socket] failed to release background notification claim %s', data.background_delegation_id)
       })
     }
-    if (state.activeRunMarker !== runMarker) return
+    if (sessionMap.get(session_id) !== state || state.activeRunMarker !== runMarker) return
     if (!state.isWorking) return
-    const queueLen = state.queue?.length ?? 0
-    state.isWorking = false
-    state.isAborting = false
-    state.profile = undefined
-    state.runId = undefined
-    state.activeRunMarker = undefined
-    state.events = []
     state.bridgePendingToolCallMarkup = undefined
     flushBridgePendingToDb(state, session_id, runMarker)
     updateSessionStats(session_id)
     const message = err instanceof Error ? err.message : String(err)
     const errUsage = await calcAndUpdateUsage(session_id, state, emit)
+    if (sessionMap.get(session_id) !== state || state.activeRunMarker !== runMarker || state.isAborting) return
     const errContextTokens = await refreshFinalContextUsage({
       sessionId: session_id,
       profile,
@@ -985,7 +990,16 @@ export async function handleBridgeRun(
       usage: errUsage,
       emit,
       bridge,
+      isCurrent: () => sessionMap.get(session_id) === state && state.activeRunMarker === runMarker && !state.isAborting,
     })
+    if (sessionMap.get(session_id) !== state || state.activeRunMarker !== runMarker || state.isAborting) return
+    const queueLen = state.queue?.length ?? 0
+    state.isWorking = false
+    state.isAborting = false
+    state.profile = undefined
+    state.runId = undefined
+    state.activeRunMarker = undefined
+    state.events = []
     emit('run.failed', {
       event: 'run.failed',
       error: message,
@@ -1007,6 +1021,8 @@ export async function handleBridgeRun(
         bridgeLogger.warn(endErr, '[chat-run-socket] failed to write ended_at for session %s', session_id)
       }
     }
+  } finally {
+    if (state.bridgeRunPollMarker === runMarker) state.bridgeRunPollMarker = undefined
   }
 }
 
@@ -1051,6 +1067,7 @@ export async function resumeBridgeRun(
   state.source = runSource
   state.runId = runId
   state.activeRunMarker = runMarker
+  state.bridgeRunPollMarker = runMarker
   state.bridgeOutput = state.bridgeOutput || latestAssistantText(state)
   state.bridgePendingAssistantContent = state.bridgePendingAssistantContent || ''
   state.bridgePendingReasoningContent = state.bridgePendingReasoningContent || ''
@@ -1073,6 +1090,10 @@ export async function resumeBridgeRun(
   let eventCursor = 0
   try {
     const snapshot = await bridge.getResult(runId)
+    if (sessionMap.get(sessionId) !== state || state.activeRunMarker !== runMarker) {
+      if (state.bridgeRunPollMarker === runMarker) state.bridgeRunPollMarker = undefined
+      return
+    }
     const deltas = Array.isArray(snapshot.deltas) ? snapshot.deltas.map(String) : []
     const snapshotEvents = Array.isArray(snapshot.events) ? snapshot.events : []
     for (const event of snapshotEvents) {
@@ -1131,6 +1152,7 @@ export async function resumeBridgeRun(
 
   try {
     for (;;) {
+      if (sessionMap.get(sessionId) !== state || state.activeRunMarker !== runMarker) return
       const chunk = await bridge.getOutput(runId, cursor, eventCursor)
       cursor = chunk.cursor
       eventCursor = chunk.event_cursor
@@ -1157,7 +1179,7 @@ export async function resumeBridgeRun(
       await delay(100)
     }
   } catch (err) {
-    if (state.activeRunMarker !== runMarker) return
+    if (sessionMap.get(sessionId) !== state || state.activeRunMarker !== runMarker) return
     state.isWorking = false
     state.isAborting = false
     state.profile = undefined
@@ -1177,6 +1199,8 @@ export async function resumeBridgeRun(
         bridgeLogger.warn(endErr, '[chat-run-socket] failed to write ended_at for session %s', sessionId)
       }
     }
+  } finally {
+    if (state.bridgeRunPollMarker === runMarker) state.bridgeRunPollMarker = undefined
   }
 }
 
@@ -1199,6 +1223,7 @@ async function refreshFinalContextUsage(args: {
   usage: { inputTokens: number; outputTokens: number }
   emit: (event: string, payload: any) => void
   bridge: AgentBridgeClient
+  isCurrent?: () => boolean
 }): Promise<number | undefined> {
   try {
     const finalHistory = await buildDbSnapshotAwareHistory(
@@ -1209,6 +1234,7 @@ async function refreshFinalContextUsage(args: {
     )
     const finalMessageUsage = estimateUsageTokensFromMessages(finalHistory)
     const finalMessageTokens = finalMessageUsage.inputTokens + finalMessageUsage.outputTokens
+    if (args.isCurrent && !args.isCurrent()) return undefined
     await ensureBridgeFixedContext({
       sessionId: args.sessionId,
       profile: args.profile,
@@ -1218,7 +1244,9 @@ async function refreshFinalContextUsage(args: {
       instructions: args.instructions,
       state: args.state,
       bridge: args.bridge,
+      isCurrent: args.isCurrent,
     })
+    if (args.isCurrent && !args.isCurrent()) return undefined
     const contextTokens = updateMessageContextTokenUsage(
       args.sessionId,
       args.state,
@@ -1293,7 +1321,7 @@ async function applyBridgeChunkAsync(
   runMetadata?: BridgeRunMetadata,
   currentInputStoredAsUser = true,
 ): Promise<void> {
-  if (state.activeRunMarker !== runMarker) {
+  if (sessionMap.get(sessionId) !== state || state.activeRunMarker !== runMarker) {
     bridgeLogger.info({
       sessionId,
       runId: chunk.run_id,
@@ -1346,6 +1374,7 @@ async function applyBridgeChunkAsync(
         currentInputTokens,
         currentInputIncludedInDb,
       })
+      if (sessionMap.get(sessionId) !== state || state.activeRunMarker !== runMarker) return
       updateMessageContextTokenUsage(
         sessionId,
         state,
@@ -1549,7 +1578,6 @@ async function applyBridgeChunkAsync(
         clarify_id: ev.clarify_id,
         question: ev.question,
         choices: Array.isArray(ev.choices) ? ev.choices : null,
-        questions: Array.isArray(ev.questions) ? ev.questions : null,
         timeout_ms: ev.timeout_ms,
         remaining_timeout_ms: ev.timeout_ms,
         requested_at: requestedAt,
@@ -1740,6 +1768,8 @@ async function applyBridgeChunkAsync(
         if (queuedState) queuedState.queue.unshift(nextQueuedRun)
         dequeueNextQueuedRun(queuedSocket, queuedSessionId, fallbackProfile)
       },
+      true,
+      runMarker,
     )
     return
   }
@@ -1806,7 +1836,10 @@ async function applyBridgeChunkAsync(
   }
   updateSessionStats(sessionId)
   await delay(BRIDGE_USAGE_FLUSH_DELAY_MS)
+  const isCurrent = () => sessionMap.get(sessionId) === state && state.activeRunMarker === runMarker && !state.isAborting
+  if (!isCurrent()) return
   const usage = await calcAndUpdateUsage(sessionId, state, emit)
+  if (!isCurrent()) return
   const contextTokens = await refreshFinalContextUsage({
     sessionId,
     profile,
@@ -1818,7 +1851,9 @@ async function applyBridgeChunkAsync(
     usage,
     emit,
     bridge,
+    isCurrent,
   })
+  if (!isCurrent()) return
   const hadQueuedRunBeforeGoalEvaluation = state.queue.length > 0
   const eventName = terminalError ? 'run.failed' : 'run.completed'
   if (runMetadata?.delegationId && state.backgroundDelegations?.[runMetadata.delegationId]) {

@@ -1311,7 +1311,7 @@ export class ChatRunSocket {
       }
     })
 
-    socket.on('clarify.respond', async (data: { session_id?: string; clarify_id?: string; response?: string; answers?: Record<string, string | string[] | null> }) => {
+    socket.on('clarify.respond', async (data: { session_id?: string; clarify_id?: string; response?: string }) => {
       if (!data.session_id || !data.clarify_id) return
       try {
         requireSocketSessionAccess(data.session_id)
@@ -1370,7 +1370,7 @@ export class ChatRunSocket {
       }
       try {
         if (shared && !buildResumeEvents(this.sessionMap.get(data.session_id)?.events || []).some(entry => entry.event === 'clarify.requested' && entry.data?.clarify_id === data.clarify_id)) throw new Error('Clarification does not belong to this session')
-        const result = await this.bridge.clarifyRespond(data.clarify_id, data.response || '', data.answers)
+        const result = await this.bridge.clarifyRespond(data.clarify_id, data.response || '')
         const resolved = Boolean((result as any)?.resolved)
         this.emitToSession(socket, data.session_id, 'clarify.resolved', {
           event: 'clarify.resolved',
@@ -2208,17 +2208,25 @@ export class ChatRunSocket {
   }
 
   private async reattachBridgeRun(socket: Socket, sid: string, state: SessionState) {
-    if (state.runId && state.isWorking) return
     const session = getSession(sid)
     const source = state.source || session?.source
     if (!isHermesWorkerBackedSession({ source, agent: session?.agent, agent_session_id: session?.agent_session_id })) return
     const profile = session?.profile || currentProfileFromSocket(socket)
+    const previousRunId = state.runId
+    const previousRunMarker = state.activeRunMarker
     let pollKey: string | undefined
     try {
       const status = await this.bridge.statusIfLoaded(sid, profile, { timeoutMs: 1000 }) as Record<string, unknown>
+      if (this.sessionMap.get(sid) !== state || state.runId !== previousRunId || state.activeRunMarker !== previousRunMarker) return
+      // A live consumer may be finishing accounting after Hermes has already
+      // stopped. Let it deliver the terminal event; do not attach a second poll.
+      if (state.bridgeRunPollMarker && state.bridgeRunPollMarker === state.activeRunMarker) return
       const running = status.running === true
-      const runId = typeof status.current_run_id === 'string' ? status.current_run_id : ''
-      if (!running || !runId) return
+      const currentRunId = typeof status.current_run_id === 'string' ? status.current_run_id : ''
+      // Recover terminal output as well as running output when a cached run has
+      // lost its consumer. Unknown run ids become run.failed in resumeBridgeRun.
+      const runId = running && currentRunId ? currentRunId : state.isWorking ? previousRunId : undefined
+      if (!runId) return
       pollKey = `${sid}:${runId}`
       if (this.bridgeResumePolls.has(pollKey)) return
       this.bridgeResumePolls.add(pollKey)
@@ -2276,6 +2284,7 @@ export class ChatRunSocket {
       logger.info('[chat-run-socket] reattached running bridge run %s for session %s', runId, sid)
     } catch (err) {
       if (pollKey) this.bridgeResumePolls.delete(pollKey)
+      if (this.sessionMap.get(sid) !== state || state.runId !== previousRunId || state.activeRunMarker !== previousRunMarker) return
       if (isBridgeStatusLookupTimeout(err)) {
         logger.debug(err, '[chat-run-socket] bridge status lookup timed out while resuming session %s', sid)
         return

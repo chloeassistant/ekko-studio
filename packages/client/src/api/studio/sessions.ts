@@ -593,11 +593,11 @@ export async function setSessionModel(id: string, model: string, provider: strin
   }
 }
 
-export async function setSessionReasoningEffort(id: string, reasoningEffort: string): Promise<boolean> {
+export async function setSessionReasoningEffort(id: string, reasoningEffort: string, model?: string): Promise<boolean> {
   try {
     await request(`/api/studio/sessions/${encodeURIComponent(id)}/reasoning-effort`, {
       method: 'POST',
-      body: JSON.stringify({ reasoningEffort }),
+      body: JSON.stringify({ reasoningEffort, ...(model !== undefined ? { model } : {}) }),
     })
     return true
   } catch {
@@ -630,7 +630,16 @@ export async function exportSession(id: string, mode: 'full' | 'compressed' = 'f
   URL.revokeObjectURL(a.href)
 }
 
+export interface UsageStatsFilters {
+  profile?: string
+  model?: string
+  agent?: string
+  account?: string
+}
+
 export interface UsageStatsResponse {
+  account_attribution_available?: boolean
+  filter_options?: { models: string[]; agents: string[]; accounts?: Array<{ id: string; username: string }> }
   cost_coverage?: import('@/utils/usage-cost').UsageCostCoverage
   total_input_tokens: number
   total_output_tokens: number
@@ -672,10 +681,19 @@ export interface UsageStatsResponse {
   }>
 }
 
-export async function fetchUsageStats(days = 30): Promise<UsageStatsResponse> {
+export async function fetchUsageStats(days = 30, filters: UsageStatsFilters = {}): Promise<UsageStatsResponse> {
   const safeDays = Number.isFinite(days) ? Math.max(1, Math.floor(days)) : 30
   const params = new URLSearchParams()
   params.set('days', String(safeDays))
+  // An explicit empty selector requests all Profiles and suppresses the global Profile header.
+  params.set('profile', filters.profile || '')
+  if (safeDays === 1) {
+    params.set('period', 'today')
+    params.set('time_zone', Intl.DateTimeFormat().resolvedOptions().timeZone)
+  }
+  if (filters.model) params.set('model', filters.model)
+  if (filters.agent) params.set('agent', filters.agent)
+  if (filters.account) params.set('account', filters.account)
   return request<UsageStatsResponse>(`/api/studio/usage/stats?${params}`)
 }
 

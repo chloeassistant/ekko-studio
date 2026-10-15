@@ -12,6 +12,7 @@ export const USAGE_TABLE = 'session_usage'
 export const USAGE_SCHEMA: Record<string, string> = {
   id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
   session_id: 'TEXT NOT NULL',
+  account_id: 'TEXT',
   run_id: "TEXT NOT NULL DEFAULT ''",
   parent_run_id: "TEXT NOT NULL DEFAULT ''",
   api_duration: 'REAL',
@@ -129,6 +130,23 @@ export const SESSION_UPLOADS_INDEXES = {
 
 export const SESSION_CATEGORIES_TABLE = 'session_categories'
 
+export const WORKSPACE_DIRECTORIES_TABLE = 'workspace_directories'
+export const WORKSPACE_DIRECTORIES_SCHEMA: Record<string, string> = {
+  id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
+  user_id: 'INTEGER NOT NULL',
+  path: 'TEXT NOT NULL',
+  path_key: 'TEXT NOT NULL',
+  is_favorite: 'INTEGER NOT NULL DEFAULT 0',
+  last_used: 'INTEGER NOT NULL DEFAULT 0',
+  use_count: 'INTEGER NOT NULL DEFAULT 0',
+  created_at: 'INTEGER NOT NULL',
+  updated_at: 'INTEGER NOT NULL',
+}
+export const WORKSPACE_DIRECTORIES_INDEXES = {
+  uniq_workspace_directories_user_path: 'CREATE UNIQUE INDEX IF NOT EXISTS uniq_workspace_directories_user_path ON workspace_directories(user_id, path_key)',
+  idx_workspace_directories_user_recent: 'CREATE INDEX IF NOT EXISTS idx_workspace_directories_user_recent ON workspace_directories(user_id, last_used DESC)',
+}
+
 export const SESSION_CATEGORIES_SCHEMA: Record<string, string> = {
   id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
   name: 'TEXT NOT NULL COLLATE NOCASE',
@@ -150,6 +168,7 @@ export const SESSIONS_SCHEMA: Record<string, string> = {
   agent_session_id: 'TEXT NOT NULL DEFAULT \'\'',
   agent_native_session_id: 'TEXT NOT NULL DEFAULT \'\'',
   user_id: 'TEXT',
+  studio_user_id: 'TEXT',
   model: 'TEXT NOT NULL DEFAULT \'\'',
   provider: 'TEXT NOT NULL DEFAULT \'\'',
   api_mode: 'TEXT NOT NULL DEFAULT \'\'',
@@ -1656,6 +1675,9 @@ export function initAllHermesTables(): void {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_usage_parent_run ON ${USAGE_TABLE}(session_id, parent_run_id)`)
 
     // Session store
+    syncTable(WORKSPACE_DIRECTORIES_TABLE, WORKSPACE_DIRECTORIES_SCHEMA, {
+      indexes: WORKSPACE_DIRECTORIES_INDEXES,
+    })
     syncTable(SESSION_CATEGORIES_TABLE, SESSION_CATEGORIES_SCHEMA, {
       indexes: SESSION_CATEGORIES_INDEXES,
     })

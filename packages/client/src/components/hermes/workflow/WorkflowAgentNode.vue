@@ -1,15 +1,17 @@
 <script setup lang="ts">
+import { modelReasoningEfforts } from '@/utils/model-reasoning-effort'
+import NativeCodingAgentModelFields from '@/components/hermes/models/NativeCodingAgentModelFields.vue'
 import { isGlobalOnlyCodingAgent } from "@/utils/agent-catalog"
 import DshSessionPresetSelect from "@/components/coding-agents/dsh/DshSessionPresetSelect.vue"
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Handle, Position, type NodeProps } from '@vue-flow/core'
 import { NodeResizer } from '@vue-flow/node-resizer'
 import { NInput, NSelect, NSwitch, NTooltip, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
-import WorkflowModelSelector from './WorkflowModelSelector.vue'
+import ScopedModelSelector from '@/components/hermes/models/ScopedModelSelector.vue'
 import WorkflowFieldHelp from './WorkflowFieldHelp.vue'
 import type { WorkflowAgentNodeData, WorkflowAgentNodeEditableData } from './types'
-import type { ChatCodingAgentId, CodingAgentApiMode } from '@/api/coding-agents'
+import type { ChatCodingAgentId, CodingAgentApiMode, CodingAgentId } from '@/api/coding-agents'
 import type { ProviderApiMode } from '@/api/studio/provider-api-mode'
 import { getFileDownloadUrl } from '@/api/studio/files'
 import { canScopedCodingAgentUseProvider } from '@/utils/codingAgentProviders'
@@ -35,8 +37,8 @@ const isCodingAgent = computed(() => props.data.agent !== 'hermes')
 const supportsGlobalMode = computed(() => ['claude-code', 'codex', 'pi', 'grok', 'opencode', 'dsh', 'cursor', 'antigravity', 'qwen', 'kimi', 'codebuddy', 'qoder', 'copilot', 'zcode'].includes(props.data.agent))
 const usesScopedModel = computed(() => !isGlobalOnlyCodingAgent(props.data.agent) && (!supportsGlobalMode.value || props.data.agentMode !== 'global'))
 const agentModeOptions = computed(() => [
-  { label: t('codingAgents.launchModeGlobal'), value: 'global' },
-  { label: t('codingAgents.launchModeScoped'), value: 'scoped' },
+  { label: t('codingAgents.modelScope'), value: 'scoped' },
+  { label: t('codingAgents.launchModeGlobalShort'), value: 'global' },
 ])
 const selectableModelGroups = computed(() => (
   isCodingAgent.value
@@ -53,14 +55,17 @@ const apiModeOptions = computed(() => [
 ])
 const reasoningEffortOptions = computed(() => [
   { label: t('chat.reasoningEffort.options.default'), value: 'default' },
-  { label: t('chat.reasoningEffort.options.none'), value: 'none' },
-  { label: t('chat.reasoningEffort.options.minimal'), value: 'minimal' },
-  { label: t('chat.reasoningEffort.options.low'), value: 'low' },
-  { label: t('chat.reasoningEffort.options.medium'), value: 'medium' },
-  { label: t('chat.reasoningEffort.options.high'), value: 'high' },
-  { label: t('chat.reasoningEffort.options.xhigh'), value: 'xhigh' },
-  { label: t('chat.reasoningEffort.options.max'), value: 'max' },
+  ...modelReasoningEfforts(
+    props.data.modelGroups,
+    props.data.provider,
+    props.data.model,
+  ).map(value => ({ label: t(`chat.reasoningEffort.options.${value}`), value })),
 ])
+watch([reasoningEffortOptions, () => props.data.reasoningEffort], ([options, effort]) => {
+  if (!props.data.readonly && usesScopedModel.value && effort && !options.some(option => option.value === effort)) {
+    updateField('reasoningEffort', 'default')
+  }
+}, { immediate: true })
 const imageAttachments = computed(() => props.data.images.filter(isImagePath))
 const fileAttachments = computed(() => props.data.images.filter(path => !isImagePath(path)))
 
@@ -200,7 +205,7 @@ async function uploadImages(files: File[]) {
         :placeholder="t('codingAgents.launchModeScope')"
         @update:value="value => updateField('agentMode', value as 'scoped' | 'global')"
       />
-      <WorkflowModelSelector
+      <ScopedModelSelector
         v-if="usesScopedModel"
         :provider="data.provider"
         :model="data.model"
@@ -208,6 +213,9 @@ async function uploadImages(files: File[]) {
         :disabled="data.readonly"
         @select="handleModelSelect"
       />
+      <NativeCodingAgentModelFields v-else :key="data.agent" :agent="data.agent as CodingAgentId"
+        :model="data.model" :reasoning-effort="data.reasoningEffort === 'default' ? '' : data.reasoningEffort"
+        :disabled="data.readonly" @change="selection => data.onUpdate(id, { ...selection, reasoningEffort: selection.reasoningEffort || 'default' })" />
       <NSelect
         v-if="isCodingAgent && usesScopedModel"
         :value="data.apiMode"
@@ -217,15 +225,22 @@ async function uploadImages(files: File[]) {
         :placeholder="t('workflow.node.apiMode')"
         @update:value="value => updateField('apiMode', value as CodingAgentApiMode)"
       />
-      <NSelect
-        v-if="usesScopedModel"
-        :value="data.reasoningEffort"
-        :options="reasoningEffortOptions"
-        size="small"
-        :disabled="data.readonly"
-        :placeholder="t('chat.reasoningEffort.tooltip')"
-        @update:value="value => updateField('reasoningEffort', value as string)"
-      />
+      <div class="node-field-row">
+        <span class="node-field-label-row">{{ t('chat.reasoningEffort.tooltip') }}</span>
+        <NSelect
+          v-if="usesScopedModel"
+          :value="data.reasoningEffort"
+          :options="reasoningEffortOptions"
+          size="small"
+          :disabled="data.readonly"
+          :aria-label="t('chat.reasoningEffort.tooltip')"
+          :placeholder="t('chat.reasoningEffort.tooltip')"
+          @update:value="value => updateField('reasoningEffort', value as string)"
+        />
+        <NativeCodingAgentModelFields v-else :key="data.agent" :agent="data.agent as CodingAgentId"
+          field="reasoning-effort" :model="data.model" :reasoning-effort="data.reasoningEffort === 'default' ? '' : data.reasoningEffort"
+          :disabled="data.readonly" @change="selection => data.onUpdate(id, { ...selection, reasoningEffort: selection.reasoningEffort || 'default' })" />
+      </div>
       <div class="node-field-row">
         <span class="node-field-label-row">
           <span>{{ t('workflow.node.join') }}</span>

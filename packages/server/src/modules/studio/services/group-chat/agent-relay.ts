@@ -23,7 +23,6 @@ import {
   type WorkspaceDiffBroadcaster,
 } from './agent-clients'
 import { defaultGroupChatWorkspace } from './workspace-files'
-import { sanitizeClarifyAnswers, sanitizeClarifyQuestions, type ClarifyAnswers } from './clarify-payload'
 import type { GroupChatRuntimeServer } from './runtime'
 import type { GroupRuntimeContext } from './room-summary'
 import { getGroupChatAttachmentDir } from './attachments'
@@ -975,7 +974,7 @@ class RelayGroupAgentExecutor implements GroupAgentExecutor {
     })
   }
 
-  respondClarify(clarifyId: string, response: string, answers?: ClarifyAnswers): Promise<boolean> {
+  respondClarify(clarifyId: string, response: string): Promise<boolean> {
     if (!this.connected) return Promise.reject(relayError('Remote Agent is offline', 'GROUP_AGENT_OFFLINE'))
     const remoteClarifyId = this.pendingRun?.clarifyIds.get(clarifyId)
     if (!remoteClarifyId) return Promise.reject(relayError('Remote clarification is no longer pending'))
@@ -984,7 +983,6 @@ class RelayGroupAgentExecutor implements GroupAgentExecutor {
       this.relaySocket.emit('clarify.respond', {
         clarifyId: remoteClarifyId,
         response: String(response).slice(0, 20_000),
-        ...(answers ? { answers } : {}),
       }, (result: { resolved?: boolean; error?: string }) => {
         clearTimeout(timer)
         if (result?.error) reject(relayError(result.error))
@@ -1053,7 +1051,6 @@ class RelayGroupAgentExecutor implements GroupAgentExecutor {
       choices: Array.isArray(data.choices)
         ? data.choices.map(choice => String(choice).slice(0, 2_000)).slice(0, 20)
         : null,
-      questions: sanitizeClarifyQuestions(data.questions),
       initial_response: String(data.initial_response || '').slice(0, 20_000),
       response_mode: ['select', 'input', 'editor'].includes(String(data.response_mode || ''))
         ? String(data.response_mode)
@@ -1726,7 +1723,7 @@ class OutboundRelayConnection {
     )
     socket.on(
       'clarify.respond',
-      async (data: { clarifyId?: string; response?: string; answers?: unknown }, ack?: (response: Record<string, unknown>) => void) => {
+      async (data: { clarifyId?: string; response?: string }, ack?: (response: Record<string, unknown>) => void) => {
         const sessionId = this.activeRequest && this.runner?.getActiveSessionId(this.activeRequest.room.id)
         if (!sessionId || !data?.clarifyId) {
           ack?.({ error: 'Clarification is not pending for an active remote run' })
@@ -1737,7 +1734,7 @@ class OutboundRelayConnection {
             const result = respondToGroupEkkoClarification(sessionId, data.clarifyId, data.response || '')
             ack?.({ resolved: Boolean(result?.resolved) })
           } else {
-            const result = await createGroupPrimaryAgentBridge().clarifyRespond(data.clarifyId, data.response || '', sanitizeClarifyAnswers(data.answers))
+            const result = await createGroupPrimaryAgentBridge().clarifyRespond(data.clarifyId, data.response || '')
             ack?.({ resolved: Boolean((result as any)?.resolved) })
           }
         } catch (error) {

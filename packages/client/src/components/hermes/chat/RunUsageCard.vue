@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { useSettingsStore } from '@/stores/hermes/settings'
 import { formatRunCost, formatRunTokens, formatCacheHitRate, type RunUsageSummary } from '@/utils/run-usage'
 
 defineProps<{ usage: RunUsageSummary }>()
 const { t } = useI18n()
+const settingsStore = useSettingsStore()
 </script>
 
 <template>
-  <div class="run-usage-card">
+  <div v-if="settingsStore.display.show_cost !== false" class="run-usage-card">
     <div class="run-usage-metric">
       <span class="run-usage-label">{{ t('chat.runUsageOutput') }}</span>
       <span class="run-usage-value" :title="String(usage.outputTokens ?? '')">{{ usage.isEstimated && usage.outputTokens != null ? '≈ ' : '' }}{{ formatRunTokens(usage.outputTokens) }}</span>

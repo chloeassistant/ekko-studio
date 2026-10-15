@@ -1490,6 +1490,93 @@ for (const operation of [usagePricingPath.get, usagePricingPath.put]) {
 }
 usagePricingPath.put.responses['400'] = { description: 'Invalid or duplicate provider/model pricing' }
 
+// Account-owned workspace shortcuts. No local-storage import or profile dimension.
+const workspaceDirectorySchema = { type: 'object', required: ['path', 'isFavorite', 'lastUsed', 'useCount', 'createdAt', 'updatedAt'], properties: {
+  path: { type: 'string' }, isFavorite: { type: 'boolean' },
+  ...Object.fromEntries(['lastUsed', 'useCount', 'createdAt', 'updatedAt'].map(key => [key, { type: 'integer', minimum: 0 }])),
+} }
+const workspaceDirectoryResponse = { type: 'object', required: ['directories'], properties: {
+  directories: { type: 'array', items: workspaceDirectorySchema },
+} }
+const workspaceDirectoriesPath = openapi.paths['/api/studio/workspace/directories']
+for (const [method, operation] of Object.entries(workspaceDirectoriesPath)) {
+  operation.operationId = { get: 'listWorkspaceDirectories', post: 'recordWorkspaceDirectory', patch: 'setWorkspaceDirectoryFavorite' }[method]
+  operation.description = 'Directory history and favorites for the authenticated Studio account, shared by Studio and App across Profiles. System-generated workspaces are excluded. Timestamps are Unix milliseconds.'
+  operation.responses['200'] = { description: 'Account directory shortcuts', content: { 'application/json': { schema: workspaceDirectoryResponse } } }
+  operation.responses['401'] = { description: 'Authenticated account required' }
+  if (method === 'get') continue
+  operation.requestBody = { required: true, content: { 'application/json': { schema: {
+    type: 'object', required: method === 'patch' ? ['path', 'favorite'] : ['path'], properties: {
+      path: { type: 'string', minLength: 1, maxLength: 4096 },
+      ...(method === 'patch' ? { favorite: { type: 'boolean' } } : {}),
+    },
+  } } } }
+  operation.responses['400'] = { description: 'Invalid directory path or favorite value' }
+}
+
+// One native model discovery endpoint for every Coding Agent.
+const codingAgentIds = ['claude-code', 'codex', 'pi', 'grok', 'opencode', 'dsh', 'cursor', 'antigravity', 'qwen', 'kimi', 'codebuddy', 'qoder', 'copilot', 'zcode']
+const nativeModelSchema = {
+  type: 'object', required: ['id', 'name'], properties: {
+    id: { type: 'string', description: 'Native model ID or alias; preserve provider prefixes.' },
+    name: { type: 'string' }, provider: { type: 'string' },
+    resolvedModel: { type: 'string', description: 'Concrete identity from native discovery; execution preserves id.' },
+    isDefault: { type: 'boolean' }, hidden: { type: 'boolean' },
+    contextWindow: { type: 'number' }, maxOutputTokens: { type: 'number' },
+    reasoningEfforts: { type: 'array', items: { type: 'string' } },
+    modelFamily: { type: 'string', description: 'Grouping key for native effort variants; never send it as a model ID.' },
+    modelFamilyName: { type: 'string' },
+    reasoningEffort: { type: 'string', description: 'Fixed effort encoded by this literal native model ID.' },
+    inputModalities: { type: 'array', items: { type: 'string' } },
+  },
+}
+const reasoningOperation = openapi.paths['/api/studio/sessions/{id}/reasoning-effort']?.post
+if (reasoningOperation) {
+  reasoningOperation.requestBody = { required: true, content: { 'application/json': { schema: {
+    type: 'object', required: ['reasoningEffort'], properties: {
+      reasoningEffort: { type: 'string', enum: ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
+      model: { type: 'string', description: 'Optional literal effort-variant ID for global Cursor/Antigravity sessions. Validated against the native catalog and current family; persisted atomically with effort.' },
+    },
+  } } } }
+  reasoningOperation.responses['400'] = { description: 'Invalid effort, mode or native variant/family' }
+  reasoningOperation.responses['503'] = { description: 'Native catalog unavailable for validating the paired model change' }
+}
+openapi.paths['/api/coding-agents/models'] = { get: {
+  tags: ['Coding Agents'], operationId: 'getCodingAgentModels', summary: 'Discover native models for one or all Coding Agents',
+  description: 'Reads native CLI/account/config model directories on this Studio server, independently of Hermes Profiles. No chat prompts are sent. Each agent has its own discovery status; an individual failure does not fail the aggregate request. Successful results cache for 60 seconds and failures for 5 seconds. Refresh bypasses the cache while sharing in-flight requests. Builtin/configured entries do not prove account access. Raw native errors and credentials are never returned.',
+  security: [{ BearerAuth: [] }],
+  parameters: [
+    { name: 'agent', in: 'query', required: false, schema: { type: 'string', enum: codingAgentIds }, description: 'Omit to discover all fourteen agents.' },
+    { name: 'refresh', in: 'query', required: false, schema: { type: 'boolean', default: false } },
+  ],
+  responses: {
+    '200': { description: 'Native directories and individual discovery statuses', content: { 'application/json': { schema: {
+      type: 'object', required: ['agents'], properties: { agents: { type: 'array', items: {
+        type: 'object', required: ['agentId', 'name', 'status', 'source', 'scope', 'models', 'checkedAt', 'cached'], properties: {
+          agentId: { type: 'string', enum: codingAgentIds }, name: { type: 'string' },
+          status: { type: 'string', enum: ['ready', 'empty', 'not_installed', 'auth_required', 'unsupported', 'timeout', 'error'] },
+          source: { type: 'string', enum: ['cli', 'app-server', 'control-protocol', 'sdk', 'acp', 'config'] },
+          scope: { type: 'string', enum: ['available', 'configured', 'builtin'] },
+          models: { type: 'array', items: nativeModelSchema }, checkedAt: { type: 'string', format: 'date-time' }, cached: { type: 'boolean' },
+        },
+      } } },
+    } } } },
+    '400': { description: 'Unknown agent or invalid query parameters' },
+    '401': { $ref: '#/components/responses/Unauthorized' },
+    '500': { description: 'Unable to initialize native model discovery' },
+  },
+} }
+
+const usageStatsOperation = openapi.paths['/api/studio/usage/stats']?.get
+if (usageStatsOperation) {
+  usageStatsOperation.description = 'Aggregates all recorded usage across accessible Profiles by default. Account means the Studio user who owns the session, not a provider account. Account options include newly created sessions before their first usage event. Legacy rows use confirmed Studio ownership; unknown ownership remains unassigned.'
+  const accountParameter = usageStatsOperation.parameters.find(parameter => parameter.name === 'account')
+  accountParameter.schema = { type: 'string', pattern: '^(?:[1-9][0-9]*|unassigned)$' }
+  accountParameter.description = 'Studio user ID, or unassigned. Omit to include all accounts.'
+  usageStatsOperation.responses['400'] = { description: 'Invalid account ID or timezone' }
+  usageStatsOperation.responses['403'] = { description: 'Selected Profile is not accessible to this user' }
+}
+
 // Write output
 const outputPath = join(rootDir, 'docs/openapi.json')
 writeFileSync(outputPath, JSON.stringify(openapi, null, 2))

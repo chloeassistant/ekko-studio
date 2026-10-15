@@ -214,8 +214,7 @@ class BridgeServer:
             if not clarify_id:
                 raise ValueError("clarify_id is required")
             response = str(req.get("response") or "").strip()
-            answers = req.get("answers")
-            return self.pool.respond_clarify(clarify_id, response, answers if isinstance(answers, dict) else None)
+            return self.pool.respond_clarify(clarify_id, response)
 
         if action == "compression_respond":
             request_id = str(req.get("request_id") or "").strip()

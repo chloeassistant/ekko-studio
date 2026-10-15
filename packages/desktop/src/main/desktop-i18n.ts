@@ -8,6 +8,8 @@ type TranslationKey =
   | 'tray.checkForUpdates'
   | 'tray.resetLogin'
   | 'tray.openAtLogin'
+  | 'tray.openAtLoginFailedTitle'
+  | 'tray.openAtLoginFailedMessage'
   | 'tray.quit'
   | 'update.upToDateTitle'
   | 'update.upToDateMessage'
@@ -32,6 +34,8 @@ type TranslationKey =
   | 'update.noUpdateInfoMessage'
   | 'update.packagedOnlyMessage'
   | 'desktop.startingLocalServices'
+  | 'desktop.connectingRemoteServices'
+  | 'desktop.failedConnectRemote'
   | 'desktop.selectRuntimeSource'
   | 'desktop.downloadFailed'
   | 'desktop.downloadCloudflareTitle'
@@ -63,8 +67,6 @@ type TranslationKey =
   | 'tray.servers'
   | 'remoteServer.configInvalid'
   | 'remoteServer.switchFailed'
-  | 'remoteServer.unreachable'
-  | 'remoteServer.connecting'
 
 const supportedLocales: DesktopLocale[] = ['en', 'zh', 'zh-TW', 'ja', 'ko', 'fr', 'es', 'de', 'pt']
 
@@ -75,6 +77,8 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'tray.checkForUpdates': 'Check for Updates',
     'tray.resetLogin': 'Reset Login',
     'tray.openAtLogin': 'Open at Login',
+    'tray.openAtLoginFailedTitle': 'Could not change Open at Login',
+    'tray.openAtLoginFailedMessage': 'The startup setting could not be saved. Check access to your startup configuration and try again.',
     'tray.quit': 'Quit Ekko Studio',
     'update.upToDateTitle': 'Ekko Studio',
     'update.upToDateMessage': 'Ekko Studio is up to date.',
@@ -99,6 +103,8 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'update.noUpdateInfoMessage': 'Update information is not available for this platform yet.',
     'update.packagedOnlyMessage': 'Automatic updates are only available in the packaged desktop app.',
     'desktop.startingLocalServices': 'Starting local services...',
+    'desktop.connectingRemoteServices': 'Connecting to the remote server...',
+    'desktop.failedConnectRemote': 'Could not connect to the remote server',
     'desktop.selectRuntimeSource': 'Select a runtime download source to start local services.',
     'desktop.downloadFailed': 'Download failed',
     'desktop.downloadCloudflareTitle': 'Download from Cloudflare',
@@ -130,8 +136,6 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'tray.servers': 'Servers',
     'remoteServer.configInvalid': 'The remote server configuration is invalid. Ekko Studio is using the local server.',
     'remoteServer.switchFailed': 'Could not save the selected server.',
-    'remoteServer.unreachable': 'Cannot reach the remote server',
-    'remoteServer.connecting': 'Connecting to the remote server...',
   },
   zh: {
     'tray.show': '显示 Ekko Studio',
@@ -139,6 +143,8 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'tray.checkForUpdates': '检查更新',
     'tray.resetLogin': '重置登录',
     'tray.openAtLogin': '开机启动',
+    'tray.openAtLoginFailedTitle': '无法更改开机启动设置',
+    'tray.openAtLoginFailedMessage': '无法保存开机启动设置，请检查自启动配置的访问权限后重试。',
     'tray.quit': '退出 Ekko Studio',
     'update.upToDateTitle': 'Ekko Studio',
     'update.upToDateMessage': 'Ekko Studio 已是最新版本。',
@@ -163,6 +169,8 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'update.noUpdateInfoMessage': '当前平台的更新信息暂不可用。',
     'update.packagedOnlyMessage': '自动更新仅在打包后的桌面应用中可用。',
     'desktop.startingLocalServices': '正在启动本地服务...',
+    'desktop.connectingRemoteServices': '正在连接远程服务器...',
+    'desktop.failedConnectRemote': '无法连接远程服务器',
     'desktop.selectRuntimeSource': '请选择运行时下载源以启动本地服务。',
     'desktop.downloadFailed': '下载失败',
     'desktop.downloadCloudflareTitle': '从 Cloudflare 下载',
@@ -194,8 +202,6 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'tray.servers': '服务器',
     'remoteServer.configInvalid': '远程服务器配置无效。Ekko Studio 正在使用本地服务器。',
     'remoteServer.switchFailed': '无法保存所选服务器。',
-    'remoteServer.unreachable': '无法连接到远程服务器',
-    'remoteServer.connecting': '正在连接远程服务器...',
   },
   'zh-TW': {
     'tray.show': '顯示 Ekko Studio',
@@ -203,6 +209,8 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'tray.checkForUpdates': '檢查更新',
     'tray.resetLogin': '重置登入',
     'tray.openAtLogin': '開機啟動',
+    'tray.openAtLoginFailedTitle': '無法變更開機啟動設定',
+    'tray.openAtLoginFailedMessage': '無法儲存開機啟動設定，請檢查自動啟動設定的存取權限後重試。',
     'tray.quit': '結束 Ekko Studio',
     'update.upToDateTitle': 'Ekko Studio',
     'update.upToDateMessage': 'Ekko Studio 已是最新版本。',
@@ -227,6 +235,8 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'update.noUpdateInfoMessage': '目前平台的更新資訊暫不可用。',
     'update.packagedOnlyMessage': '自動更新僅可在打包後的桌面應用中使用。',
     'desktop.startingLocalServices': '正在啟動本地服務...',
+    'desktop.connectingRemoteServices': '正在連線遠端伺服器...',
+    'desktop.failedConnectRemote': '無法連線遠端伺服器',
     'desktop.selectRuntimeSource': '請選擇運行時下載來源以啟動本地服務。',
     'desktop.downloadFailed': '下載失敗',
     'desktop.downloadCloudflareTitle': '從 Cloudflare 下載',
@@ -258,8 +268,6 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'tray.servers': '伺服器',
     'remoteServer.configInvalid': '遠端伺服器設定無效。Ekko Studio 正在使用本機伺服器。',
     'remoteServer.switchFailed': '無法儲存所選伺服器。',
-    'remoteServer.unreachable': '無法連線到遠端伺服器',
-    'remoteServer.connecting': '正在連線到遠端伺服器...',
   },
   ja: {
     'tray.show': 'Ekko Studio を表示',
@@ -267,6 +275,8 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'tray.checkForUpdates': 'アップデートを確認',
     'tray.resetLogin': 'Reset Login',
     'tray.openAtLogin': 'ログイン時に開く',
+    'tray.openAtLoginFailedTitle': 'ログイン時の起動設定を変更できません',
+    'tray.openAtLoginFailedMessage': '起動設定を保存できませんでした。自動起動設定へのアクセス権限を確認して再試行してください。',
     'tray.quit': 'Ekko Studio を終了',
     'update.upToDateTitle': 'Ekko Studio',
     'update.upToDateMessage': 'Ekko Studio は最新です。',
@@ -291,6 +301,8 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'update.noUpdateInfoMessage': 'このプラットフォームのアップデート情報はまだ利用できません。',
     'update.packagedOnlyMessage': '自動アップデートはパッケージ版デスクトップアプリでのみ利用できます。',
     'desktop.startingLocalServices': 'ローカルサービスを起動しています...',
+    'desktop.connectingRemoteServices': 'リモートサーバーに接続しています...',
+    'desktop.failedConnectRemote': 'リモートサーバーに接続できません',
     'desktop.selectRuntimeSource': 'ローカルサービスを開始するためのランタイムダウンロード元を選択してください。',
     'desktop.downloadFailed': 'ダウンロードに失敗しました',
     'desktop.downloadCloudflareTitle': 'Cloudflare からダウンロード',
@@ -322,8 +334,6 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'tray.servers': 'サーバー',
     'remoteServer.configInvalid': 'リモートサーバーの設定が無効です。Ekko Studio はローカルサーバーを使用しています。',
     'remoteServer.switchFailed': '選択したサーバーを保存できませんでした。',
-    'remoteServer.unreachable': 'リモートサーバーに接続できません',
-    'remoteServer.connecting': 'リモートサーバーに接続しています...',
   },
   ko: {
     'tray.show': 'Ekko Studio 표시',
@@ -331,6 +341,8 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'tray.checkForUpdates': '업데이트 확인',
     'tray.resetLogin': 'Reset Login',
     'tray.openAtLogin': '로그인 시 열기',
+    'tray.openAtLoginFailedTitle': '로그인 시 시작 설정을 변경할 수 없습니다',
+    'tray.openAtLoginFailedMessage': '시작 설정을 저장할 수 없습니다. 자동 시작 설정에 대한 접근 권한을 확인한 후 다시 시도하세요.',
     'tray.quit': 'Ekko Studio 종료',
     'update.upToDateTitle': 'Ekko Studio',
     'update.upToDateMessage': 'Ekko Studio가 최신 버전입니다.',
@@ -355,6 +367,8 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'update.noUpdateInfoMessage': '이 플랫폼의 업데이트 정보를 아직 사용할 수 없습니다.',
     'update.packagedOnlyMessage': '자동 업데이트는 패키징된 데스크톱 앱에서만 사용할 수 있습니다.',
     'desktop.startingLocalServices': '로컬 서비스를 시작하는 중...',
+    'desktop.connectingRemoteServices': '원격 서버에 연결하는 중...',
+    'desktop.failedConnectRemote': '원격 서버에 연결할 수 없습니다',
     'desktop.selectRuntimeSource': '로컬 서비스를 시작할 런타임 다운로드 소스를 선택하세요.',
     'desktop.downloadFailed': '다운로드 실패',
     'desktop.downloadCloudflareTitle': 'Cloudflare에서 다운로드',
@@ -386,8 +400,6 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'tray.servers': '서버',
     'remoteServer.configInvalid': '원격 서버 구성이 올바르지 않습니다. Ekko Studio가 로컬 서버를 사용합니다.',
     'remoteServer.switchFailed': '선택한 서버를 저장할 수 없습니다.',
-    'remoteServer.unreachable': '원격 서버에 연결할 수 없습니다',
-    'remoteServer.connecting': '원격 서버에 연결하는 중...',
   },
   fr: {
     'tray.show': 'Afficher Ekko Studio',
@@ -395,6 +407,8 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'tray.checkForUpdates': 'Rechercher les mises a jour',
     'tray.resetLogin': 'Reset Login',
     'tray.openAtLogin': 'Ouvrir a la connexion',
+    'tray.openAtLoginFailedTitle': 'Impossible de modifier le démarrage à la connexion',
+    'tray.openAtLoginFailedMessage': 'Impossible d’enregistrer ce réglage. Vérifiez les droits d’accès à votre configuration de démarrage et réessayez.',
     'tray.quit': 'Quitter Ekko Studio',
     'update.upToDateTitle': 'Ekko Studio',
     'update.upToDateMessage': 'Ekko Studio est a jour.',
@@ -419,6 +433,8 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'update.noUpdateInfoMessage': 'Les informations de mise a jour ne sont pas encore disponibles pour cette plateforme.',
     'update.packagedOnlyMessage': 'Les mises a jour automatiques ne sont disponibles que dans l application de bureau packagee.',
     'desktop.startingLocalServices': 'Demarrage des services locaux...',
+    'desktop.connectingRemoteServices': 'Connexion au serveur distant...',
+    'desktop.failedConnectRemote': 'Impossible de se connecter au serveur distant',
     'desktop.selectRuntimeSource': 'Selectionnez une source de telechargement du runtime pour demarrer les services locaux.',
     'desktop.downloadFailed': 'Echec du telechargement',
     'desktop.downloadCloudflareTitle': 'Telecharger depuis Cloudflare',
@@ -450,8 +466,6 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'tray.servers': 'Serveurs',
     'remoteServer.configInvalid': 'La configuration du serveur distant est invalide. Ekko Studio utilise le serveur local.',
     'remoteServer.switchFailed': 'Impossible de sauvegarder le serveur selectionne.',
-    'remoteServer.unreachable': 'Impossible de joindre le serveur distant',
-    'remoteServer.connecting': 'Connexion au serveur distant...',
   },
   es: {
     'tray.show': 'Mostrar Ekko Studio',
@@ -459,6 +473,8 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'tray.checkForUpdates': 'Buscar actualizaciones',
     'tray.resetLogin': 'Reset Login',
     'tray.openAtLogin': 'Abrir al iniciar sesion',
+    'tray.openAtLoginFailedTitle': 'No se pudo cambiar el inicio automático',
+    'tray.openAtLoginFailedMessage': 'No se pudo guardar el ajuste. Comprueba los permisos de acceso a la configuración de inicio y vuelve a intentarlo.',
     'tray.quit': 'Salir de Ekko Studio',
     'update.upToDateTitle': 'Ekko Studio',
     'update.upToDateMessage': 'Ekko Studio esta actualizado.',
@@ -483,6 +499,8 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'update.noUpdateInfoMessage': 'La informacion de actualizacion aun no esta disponible para esta plataforma.',
     'update.packagedOnlyMessage': 'Las actualizaciones automaticas solo estan disponibles en la app de escritorio empaquetada.',
     'desktop.startingLocalServices': 'Iniciando servicios locales...',
+    'desktop.connectingRemoteServices': 'Conectando al servidor remoto...',
+    'desktop.failedConnectRemote': 'No se pudo conectar al servidor remoto',
     'desktop.selectRuntimeSource': 'Selecciona una fuente de descarga del runtime para iniciar los servicios locales.',
     'desktop.downloadFailed': 'Error de descarga',
     'desktop.downloadCloudflareTitle': 'Descargar desde Cloudflare',
@@ -514,8 +532,6 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'tray.servers': 'Servidores',
     'remoteServer.configInvalid': 'La configuracion del servidor remoto no es valida. Ekko Studio usa el servidor local.',
     'remoteServer.switchFailed': 'No se pudo guardar el servidor seleccionado.',
-    'remoteServer.unreachable': 'No se puede conectar con el servidor remoto',
-    'remoteServer.connecting': 'Conectando con el servidor remoto...',
   },
   de: {
     'tray.show': 'Ekko Studio anzeigen',
@@ -523,6 +539,8 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'tray.checkForUpdates': 'Nach Updates suchen',
     'tray.resetLogin': 'Reset Login',
     'tray.openAtLogin': 'Beim Anmelden offnen',
+    'tray.openAtLoginFailedTitle': 'Autostart konnte nicht geändert werden',
+    'tray.openAtLoginFailedMessage': 'Die Einstellung konnte nicht gespeichert werden. Prüfen Sie die Zugriffsrechte für Ihre Autostart-Konfiguration und versuchen Sie es erneut.',
     'tray.quit': 'Ekko Studio beenden',
     'update.upToDateTitle': 'Ekko Studio',
     'update.upToDateMessage': 'Ekko Studio ist auf dem neuesten Stand.',
@@ -547,6 +565,8 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'update.noUpdateInfoMessage': 'Update-Informationen sind fur diese Plattform noch nicht verfugbar.',
     'update.packagedOnlyMessage': 'Automatische Updates sind nur in der paketierten Desktop-App verfugbar.',
     'desktop.startingLocalServices': 'Lokale Dienste werden gestartet...',
+    'desktop.connectingRemoteServices': 'Verbindung zum Remote-Server wird hergestellt...',
+    'desktop.failedConnectRemote': 'Verbindung zum Remote-Server fehlgeschlagen',
     'desktop.selectRuntimeSource': 'Wahlen Sie eine Runtime-Downloadquelle aus, um lokale Dienste zu starten.',
     'desktop.downloadFailed': 'Download fehlgeschlagen',
     'desktop.downloadCloudflareTitle': 'Von Cloudflare herunterladen',
@@ -578,8 +598,6 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'tray.servers': 'Server',
     'remoteServer.configInvalid': 'Die Konfiguration des Remote-Servers ist ungultig. Ekko Studio verwendet den lokalen Server.',
     'remoteServer.switchFailed': 'Der ausgewahlte Server konnte nicht gespeichert werden.',
-    'remoteServer.unreachable': 'Remote-Server nicht erreichbar',
-    'remoteServer.connecting': 'Verbindung zum Remote-Server wird hergestellt...',
   },
   pt: {
     'tray.show': 'Mostrar Ekko Studio',
@@ -587,6 +605,8 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'tray.checkForUpdates': 'Verificar atualizacoes',
     'tray.resetLogin': 'Reset Login',
     'tray.openAtLogin': 'Abrir ao iniciar sessao',
+    'tray.openAtLoginFailedTitle': 'Não foi possível alterar a inicialização automática',
+    'tray.openAtLoginFailedMessage': 'Não foi possível salvar a configuração. Verifique as permissões de acesso à configuração de inicialização e tente novamente.',
     'tray.quit': 'Sair do Ekko Studio',
     'update.upToDateTitle': 'Ekko Studio',
     'update.upToDateMessage': 'Ekko Studio esta atualizado.',
@@ -611,6 +631,8 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'update.noUpdateInfoMessage': 'As informacoes de atualizacao ainda nao estao disponiveis para esta plataforma.',
     'update.packagedOnlyMessage': 'Atualizacoes automaticas estao disponiveis apenas no app desktop empacotado.',
     'desktop.startingLocalServices': 'Iniciando servicos locais...',
+    'desktop.connectingRemoteServices': 'Conectando ao servidor remoto...',
+    'desktop.failedConnectRemote': 'Não foi possível conectar ao servidor remoto',
     'desktop.selectRuntimeSource': 'Selecione uma fonte de download do runtime para iniciar os servicos locais.',
     'desktop.downloadFailed': 'Falha no download',
     'desktop.downloadCloudflareTitle': 'Baixar pelo Cloudflare',
@@ -642,8 +664,6 @@ const translations: Record<DesktopLocale, Record<TranslationKey, string>> = {
     'tray.servers': 'Servidores',
     'remoteServer.configInvalid': 'A configuracao do servidor remoto e invalida. Ekko Studio esta usando o servidor local.',
     'remoteServer.switchFailed': 'Nao foi possivel salvar o servidor selecionado.',
-    'remoteServer.unreachable': 'Nao foi possivel conectar ao servidor remoto',
-    'remoteServer.connecting': 'Conectando ao servidor remoto...',
   },
 }
 

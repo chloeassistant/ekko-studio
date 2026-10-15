@@ -9,6 +9,7 @@ const props = withDefaults(defineProps<{
   reasoningId?: string | number | null
   elapsed: string
   agent?: ChatAgentAvatar
+  deploymentSessionId?: string
 }>(), {
   agent: () => ({ label: 'Hermes', src: '/coding-agents/hermes.png' }),
 })
@@ -72,10 +73,15 @@ onBeforeUnmount(() => cancelAnimationFrame(scrollFrame))
   <div class="live-reasoning-status">
     <div class="thinking-status">
       <img
+        :key="isEkko ? thinkingImage : agent.src"
         :src="isEkko ? thinkingImage : agent.src"
+        data-agent-deployment-image="pending"
+        @load="($event.target as HTMLImageElement).dataset.agentDeploymentImage = 'ready'"
+        @error="($event.target as HTMLImageElement).dataset.agentDeploymentImage = 'error'"
         alt=""
         aria-hidden="true"
         class="thinking-avatar"
+        :data-agent-deployment-target="deploymentSessionId || ''"
         :class="isEkko ? 'thinking-avatar--animated' : 'thinking-avatar--logo'"
       >
       <div class="thinking-status-copy">

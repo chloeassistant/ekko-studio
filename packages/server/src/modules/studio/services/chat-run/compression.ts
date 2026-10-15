@@ -255,6 +255,7 @@ export async function buildCompressedHistory(
       profile,
       model: modelContext.model,
       provider: modelContext.provider,
+      baseUrl: upstream,
     })
     const compressionConfig = await getRunChatCompressionConfig(profile, contextLength)
     const triggerTokens = compressionConfig.triggerTokens
@@ -595,7 +596,7 @@ export async function forceCompressBridgeHistory(
 
   const upstream = options.upstream || ''
   const apiKey = options.apiKey
-  const contextLength = getModelContextLength({ profile, ...modelContext })
+  const contextLength = getModelContextLength({ profile, ...modelContext, baseUrl: upstream })
   const compressionConfig = await getRunChatCompressionConfig(session?.profile || profile, contextLength)
   const beforeUsage = initialSnapshot?.compressedThroughMessageId != null
     ? (() => {
